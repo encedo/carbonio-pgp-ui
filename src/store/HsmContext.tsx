@@ -1,7 +1,7 @@
-import React, { createContext, useCallback, useContext, useState } from 'react';
+import React, { createContext, useCallback, useContext, useRef, useState } from 'react';
 import { HEM } from '../../../hem-sdk-js/hem-sdk.browser.js';
 
-// ── DESCR helpers (inlined from encedo-pgp-js/keychain.js) ──────────────────
+// ── DESCR helpers ─────────────────────────────────────────────────────────────
 
 export const DESCR_PREFIX = 'ETSPGP:';
 
@@ -47,45 +47,79 @@ export function decodeDescr(key: { description: Uint8Array | string | null }): P
   }
 }
 
-// ── Types ────────────────────────────────────────────────────────────────────
+// DESCR string builders (mirrors keychain.js)
+export const DESCR = {
+  selfSign: (email: string, iat: number, exp?: number) =>
+    `ETSPGP:self,${email},sign,${iat}${exp ? `,${exp}` : ''}`,
+  selfEcdh: (email: string, iat: number, exp?: number) =>
+    `ETSPGP:self,${email},ecdh,${iat}${exp ? `,${exp}` : ''}`,
+};
+
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface HsmState {
   url: string;
   hem: InstanceType<typeof HEM> | null;
-  listToken: string | null;  // keymgmt:list token
-  impToken: string | null;   // keymgmt:imp token (for importPublicKey)
+  listToken: string | null;   // keymgmt:list
+  impToken:  string | null;   // keymgmt:imp
+  genToken:  string | null;   // keymgmt:gen
   connected: boolean;
-  unlocked: boolean;
-  error: string | null;
+  unlocked:  boolean;
+  error:     string | null;
 }
 
 export interface HsmContextValue extends HsmState {
   setUrl: (url: string) => void;
   connect: (password: string) => Promise<void>;
   disconnect: () => void;
+  /** Obtain a fresh token for any scope (uses in-memory password) */
+  authorize: (scope: string) => Promise<string>;
 }
 
-// ── Context ──────────────────────────────────────────────────────────────────
+// ── Context ───────────────────────────────────────────────────────────────────
 
 const HsmContext = createContext<HsmContextValue | null>(null);
 
 const HSM_URL_KEY = 'pgp-hsm-url';
 const HSM_PW_KEY  = 'pgp-hsm-password';
 
+const TOKEN_TTL = 8 * 3600;  // 8 hours, in seconds
+
 export function HsmProvider({ children }: { children: React.ReactNode }) {
+  // Password kept in memory only (not in React state to avoid re-renders)
+  const passwordRef = useRef<string>('');
+  // Token cache: scope → { token, expiresAt (ms) }
+  const tokenCache  = useRef<Map<string, { token: string; expiresAt: number }>>(new Map());
+
   const [state, setState] = useState<HsmState>(() => ({
     url: localStorage.getItem(HSM_URL_KEY) ?? '',
     hem: null,
     listToken: null,
-    impToken: null,
+    impToken:  null,
+    genToken:  null,
     connected: false,
-    unlocked: false,
-    error: null,
+    unlocked:  false,
+    error:     null,
   }));
+
+  // Authorize with cache — reuses token if still valid, fetches new one otherwise
+  const authorizeWithCache = async (hem: InstanceType<typeof HEM>, password: string, scope: string): Promise<string> => {
+    const cached = tokenCache.current.get(scope);
+    if (cached && Date.now() < cached.expiresAt) return cached.token;
+    const token = await hem.authorizePassword(password, scope, TOKEN_TTL);
+    tokenCache.current.set(scope, { token, expiresAt: Date.now() + TOKEN_TTL * 1000 - 30_000 });
+    return token;
+  };
 
   const setUrl = useCallback((url: string) => {
     localStorage.setItem(HSM_URL_KEY, url);
-    setState(s => ({ ...s, url, hem: null, listToken: null, impToken: null, connected: false, unlocked: false, error: null }));
+    passwordRef.current = '';
+    tokenCache.current.clear();
+    setState(s => ({
+      ...s, url,
+      hem: null, listToken: null, impToken: null, genToken: null,
+      connected: false, unlocked: false, error: null,
+    }));
   }, []);
 
   const connect = useCallback(async (password: string) => {
@@ -93,26 +127,50 @@ export function HsmProvider({ children }: { children: React.ReactNode }) {
     try {
       const hem = new HEM(state.url);
       await hem.hemCheckin();
-      const listToken = await hem.authorizePassword(password, 'keymgmt:list');
+      tokenCache.current.clear();
+
+      const listToken = await authorizeWithCache(hem, password, 'keymgmt:list');
+
       let impToken: string | null = null;
-      try {
-        impToken = await hem.authorizePassword(password, 'keymgmt:imp');
-      } catch { /* import not available — impToken stays null */ }
-      setState(s => ({ ...s, hem, listToken, impToken, connected: true, unlocked: true, error: null }));
+      try { impToken = await authorizeWithCache(hem, password, 'keymgmt:imp'); } catch { /* optional */ }
+
+      let genToken: string | null = null;
+      try { genToken = await authorizeWithCache(hem, password, 'keymgmt:gen'); } catch { /* optional */ }
+
+      passwordRef.current = password;
+      if (sessionStorage.getItem(HSM_PW_KEY)) {
+        sessionStorage.setItem(HSM_PW_KEY, password);
+      }
+
+      setState(s => ({ ...s, hem, listToken, impToken, genToken, connected: true, unlocked: true, error: null }));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      setState(s => ({ ...s, connected: false, unlocked: false, impToken: null, error: msg }));
+      setState(s => ({ ...s, connected: false, unlocked: false, impToken: null, genToken: null, error: msg }));
       throw e;
     }
   }, [state.url]);
 
   const disconnect = useCallback(() => {
     sessionStorage.removeItem(HSM_PW_KEY);
-    setState(s => ({ ...s, hem: null, listToken: null, connected: false, unlocked: false, error: null }));
+    passwordRef.current = '';
+    tokenCache.current.clear();
+    setState(s => ({
+      ...s,
+      hem: null, listToken: null, impToken: null, genToken: null,
+      connected: false, unlocked: false, error: null,
+    }));
   }, []);
 
+  const authorize = useCallback(async (scope: string): Promise<string> => {
+    const { hem } = state;
+    if (!hem) throw new Error('HSM not connected');
+    const pw = passwordRef.current || sessionStorage.getItem(HSM_PW_KEY) || '';
+    if (!pw) throw new Error('Password not available — please unlock HSM again');
+    return authorizeWithCache(hem, pw, scope);
+  }, [state]);
+
   return (
-    <HsmContext.Provider value={{ ...state, setUrl, connect, disconnect }}>
+    <HsmContext.Provider value={{ ...state, setUrl, connect, disconnect, authorize }}>
       {children}
     </HsmContext.Provider>
   );

@@ -67,6 +67,8 @@ declare module '*/hem-sdk.js' {
 
     ecdh(token: string, kid: string, peerPubKeyBase64: string): Promise<string>; // base64 shared secret
 
+    deleteKey(token: string, kid: string): Promise<void>;
+
     clearCache(): void;
   }
 }
