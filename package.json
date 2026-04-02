@@ -18,10 +18,20 @@
   "author": "Encedo <https://encedo.com>",
   "license": "AGPL-3.0-only",
   "devDependencies": {
-    "@zextras/carbonio-ui-sdk": "^2.2.2",
+    "@babel/preset-env": "^7.29.2",
+    "@babel/preset-react": "^7.28.5",
+    "@babel/preset-typescript": "^7.28.5",
     "@types/react": "^18.0.0",
     "@types/react-dom": "^18.0.0",
+    "@zextras/carbonio-ui-sdk": "^2.2.2",
     "typescript": "^5.0.0"
+  },
+  "carbonio": {
+    "name": "carbonio-pgp-ui",
+    "priority": 20,
+    "type": "carbonio",
+    "icon": "LockOutline",
+    "display": "PGP"
   },
   "peerDependencies": {
     "@zextras/carbonio-design-system": "*",
