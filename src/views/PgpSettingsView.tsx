@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Button, Icon, Input, Spinner, Text } from '@zextras/carbonio-design-system';
-import { HsmProvider, decodeDescr, useHsm, DESCR_PREFIX } from '../store/HsmContext';
+import { HsmProvider, decodeDescr, useHsm, DESCR_PREFIX, DESCR, encodeDescr } from '../store/HsmContext';
+import { patchWebCrypto } from '../lib/webcrypto-patch';
+import { wkdFetch } from '../lib/wkd-fetch';
 import { HsmUrlModal } from '../components/HsmUrlModal';
 import { HsmPasswordModal } from '../components/HsmPasswordModal';
 import { WkdImportModal } from '../components/WkdImportModal';
@@ -11,6 +13,7 @@ import { KeygenModal } from '../components/KeygenModal';
 interface KeyPair {
   email: string;
   iat: number;
+  exp?: number;
   kidSign: string;
   kidEcdh: string;
 }
@@ -112,14 +115,14 @@ const S = {
     background: color ?? (ok ? '#276749' : '#9b2c2c'),
   }),
 
-  pill: (status: 'published' | 'local'): React.CSSProperties => ({
+  pill: (status: 'published' | 'local' | 'checking'): React.CSSProperties => ({
     display: 'inline-block',
     padding: '2px 8px',
     borderRadius: 12,
     fontSize: 11,
     fontWeight: 500,
-    background: status === 'published' ? '#c6f6d5' : '#e2e8f0',
-    color:      status === 'published' ? '#276749' : '#718096',
+    background: status === 'published' ? '#c6f6d5' : status === 'checking' ? '#fef9c3' : '#e2e8f0',
+    color:      status === 'published' ? '#276749' : status === 'checking' ? '#92400e' : '#718096',
   }),
 
   emptyState: {
@@ -153,8 +156,8 @@ const S = {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function formatDate(iat: number): string {
-  return new Date(iat * 1000).toISOString().slice(0, 10);
+function formatDate(ts: number): string {
+  return new Date(ts * 1000).toISOString().slice(0, 10);
 }
 
 function shortKid(kid: string): string {
@@ -165,7 +168,7 @@ function shortKid(kid: string): string {
 // ── Inner view ────────────────────────────────────────────────────────────────
 
 function PgpSettingsInner() {
-  const { url, hem, listToken, connected, unlocked, disconnect, authorize } = useHsm();
+  const { url, hem, listToken, genToken, connected, unlocked, disconnect, authorize } = useHsm();
 
   const [urlModalOpen, setUrlModalOpen] = useState(false);
   const [pwModalOpen,  setPwModalOpen]  = useState(false);
@@ -175,6 +178,10 @@ function PgpSettingsInner() {
   const [loadingKeys, setLoadingKeys] = useState(false);
   const [keysError,   setKeysError]   = useState<string | null>(null);
 
+  const [wkdStatuses,    setWkdStatuses]    = useState<Map<string, 'checking' | 'published' | 'local'>>(new Map());
+  const [publishingEmail, setPublishingEmail] = useState<string | null>(null);
+  const [publishError,    setPublishError]    = useState<string | null>(null);
+
   const [peerEmailInput,  setPeerEmailInput]  = useState('');
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [importEmail,     setImportEmail]     = useState('');
@@ -182,6 +189,12 @@ function PgpSettingsInner() {
   const [removeTarget,    setRemoveTarget]    = useState<PeerKeyPair | null>(null);
   const [removing,        setRemoving]        = useState(false);
   const [removeError,     setRemoveError]     = useState<string | null>(null);
+  const [revokeTarget,    setRevokeTarget]    = useState<KeyPair | null>(null);
+  const [revoking,        setRevoking]        = useState(false);
+  const [revokeError,     setRevokeError]     = useState<string | null>(null);
+  const [rotateTarget,    setRotateTarget]    = useState<KeyPair | null>(null);
+  const [rotating,        setRotating]        = useState(false);
+  const [rotateError,     setRotateError]     = useState<string | null>(null);
 
   // ── Load keys ──────────────────────────────────────────────────────────────
 
@@ -199,7 +212,7 @@ function PgpSettingsInner() {
         if (!d) continue;
         if (d.role === 'self' && d.iat !== undefined) {
           const k = `${d.email}:${d.iat}`;
-          const e = selfMap.get(k) ?? { email: d.email, iat: d.iat };
+          const e = selfMap.get(k) ?? { email: d.email, iat: d.iat, exp: d.exp };
           if (d.keyType === 'sign') e.kidSign = key.kid;
           if (d.keyType === 'ecdh') e.kidEcdh = key.kid;
           selfMap.set(k, e);
@@ -211,12 +224,34 @@ function PgpSettingsInner() {
         }
       }
 
-      setSelfKeys(
-        [...selfMap.values()].filter((k): k is KeyPair => !!(k.kidSign && k.kidEcdh))
-      );
+      const keys = [...selfMap.values()].filter((k): k is KeyPair => !!(k.kidSign && k.kidEcdh));
+      setSelfKeys(keys);
       setPeerKeys(
         [...peerMap.values()].filter((k): k is PeerKeyPair => !!(k.kidSign || k.kidEcdh)) as PeerKeyPair[]
       );
+
+      // Check WKD status for each self key (by email)
+      const initStatuses = new Map<string, 'checking' | 'published' | 'local'>();
+      for (const k of keys) initStatuses.set(k.email, 'checking');
+      setWkdStatuses(initStatuses);
+
+      for (const k of keys) {
+        wkdFetch(k.email)
+          .then(result => {
+            setWkdStatuses(prev => {
+              const next = new Map(prev);
+              next.set(k.email, result ? 'published' : 'local');
+              return next;
+            });
+          })
+          .catch(() => {
+            setWkdStatuses(prev => {
+              const next = new Map(prev);
+              next.set(k.email, 'local');
+              return next;
+            });
+          });
+      }
     } catch (e) {
       setKeysError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -226,7 +261,7 @@ function PgpSettingsInner() {
 
   useEffect(() => {
     if (unlocked) loadKeys();
-    else { setSelfKeys([]); setPeerKeys([]); }
+    else { setSelfKeys([]); setPeerKeys([]); setWkdStatuses(new Map()); }
   }, [unlocked, loadKeys]);
 
   // ── Handlers ───────────────────────────────────────────────────────────────
@@ -234,6 +269,104 @@ function PgpSettingsInner() {
   function handleUnlockClick() {
     if (!url) setUrlModalOpen(true);
     else      setPwModalOpen(true);
+  }
+
+  async function handlePublish(kp: KeyPair) {
+    if (!hem) return;
+    setPublishingEmail(kp.email);
+    setPublishError(null);
+    try {
+      const wkdBase = `https://${window.location.hostname}/wkd`;
+      const useToken     = await authorize(`keymgmt:use:${kp.kidSign}`);
+      const useEcdhToken = await authorize(`keymgmt:use:${kp.kidEcdh}`);
+      patchWebCrypto();
+      const { buildCertificate, publishKey } = await import('../../../encedo-pgp-js/dist/encedo-pgp.browser.js');
+      const { cert } = await buildCertificate(hem, useToken, kp.kidSign, kp.kidEcdh, kp.email, {
+        ecdhToken: useEcdhToken, timestamp: kp.iat, expiryTimestamp: kp.exp,
+      });
+      await publishKey(wkdBase, kp.email, cert);
+      setWkdStatuses(prev => { const next = new Map(prev); next.set(kp.email, 'published'); return next; });
+    } catch (e: unknown) {
+      setPublishError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPublishingEmail(null);
+    }
+  }
+
+  async function handleRotateConfirm() {
+    if (!rotateTarget || !hem || !genToken) return;
+    setRotating(true);
+    setRotateError(null);
+    try {
+      const wkdBase = `https://${window.location.hostname}/wkd`;
+      // 1. Revoke from WKD (ignore 404)
+      try {
+        patchWebCrypto();
+        const { revokeKey } = await import('../../../encedo-pgp-js/dist/encedo-pgp.browser.js');
+        await revokeKey(wkdBase, rotateTarget.email);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (!msg.includes('404')) throw e;
+      }
+      // 2. Delete old keys
+      const delToken = await authorize('keymgmt:del');
+      await hem.deleteKey(delToken, rotateTarget.kidSign);
+      await hem.deleteKey(delToken, rotateTarget.kidEcdh);
+      // 3. Generate new keys (preserve TTL if known)
+      const iat = Math.floor(Date.now() / 1000);
+      const exp = rotateTarget.exp ? iat + (rotateTarget.exp - rotateTarget.iat) : undefined;
+      const { kid: kidSign } = await hem.createKeyPair(
+        genToken, `pgp-sign-${rotateTarget.email}`, 'ED25519',
+        encodeDescr(DESCR.selfSign(rotateTarget.email, iat, exp)),
+      );
+      const { kid: kidEcdh } = await hem.createKeyPair(
+        genToken, `pgp-ecdh-${rotateTarget.email}`, 'CURVE25519',
+        encodeDescr(DESCR.selfEcdh(rotateTarget.email, iat, exp)),
+      );
+      // 4. Build cert and publish
+      const useToken     = await authorize(`keymgmt:use:${kidSign}`);
+      const useEcdhToken = await authorize(`keymgmt:use:${kidEcdh}`);
+      patchWebCrypto();
+      const { buildCertificate, publishKey } = await import('../../../encedo-pgp-js/dist/encedo-pgp.browser.js');
+      const { cert } = await buildCertificate(hem, useToken, kidSign, kidEcdh, rotateTarget.email, {
+        ecdhToken: useEcdhToken, timestamp: iat, expiryTimestamp: exp,
+      });
+      await publishKey(wkdBase, rotateTarget.email, cert);
+      setRotateTarget(null);
+      loadKeys();
+    } catch (e: unknown) {
+      setRotateError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRotating(false);
+    }
+  }
+
+  async function handleRevokeConfirm() {
+    if (!revokeTarget || !hem) return;
+    setRevoking(true);
+    setRevokeError(null);
+    try {
+      const wkdBase = `https://${window.location.hostname}/wkd`;
+      // WKD revoke first — ignore 404 (key may not have been published)
+      try {
+        patchWebCrypto();
+        const { revokeKey } = await import('../../../encedo-pgp-js/dist/encedo-pgp.browser.js');
+        await revokeKey(wkdBase, revokeTarget.email);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (!msg.includes('404')) throw e;
+      }
+      // Delete both keys from HSM
+      const delToken = await authorize('keymgmt:del');
+      await hem.deleteKey(delToken, revokeTarget.kidSign);
+      await hem.deleteKey(delToken, revokeTarget.kidEcdh);
+      setRevokeTarget(null);
+      loadKeys();
+    } catch (e: unknown) {
+      setRevokeError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRevoking(false);
+    }
   }
 
   async function handleRemoveConfirm() {
@@ -314,7 +447,6 @@ function PgpSettingsInner() {
                 </>
               )}
 
-              <Button label="Change URL" color="secondary" onClick={() => setUrlModalOpen(true)} size="small" />
             </div>
           </div>
         </div>
@@ -348,39 +480,73 @@ function PgpSettingsInner() {
                   : 'Unlock HSM to see your keys.'}
               </div>
             ) : (
-              <div style={S.tableWrap}>
-                <table style={S.table}>
-                  <thead>
-                    <tr>
-                      <th style={S.th}>Email</th>
-                      <th style={S.th}>Key ID (sign)</th>
-                      <th style={S.th}>Key ID (ecdh)</th>
-                      <th style={S.th}>Created</th>
-                      <th style={S.th}>WKD</th>
-                      <th style={S.th}></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {selfKeys.map(kp => (
-                      <tr className="pgp-tr" key={`${kp.email}:${kp.iat}`}>
-                        <td style={S.td}>{kp.email}</td>
-                        <td style={{ ...S.td, ...S.mono }}>{shortKid(kp.kidSign)}</td>
-                        <td style={{ ...S.td, ...S.mono }}>{shortKid(kp.kidEcdh)}</td>
-                        <td style={{ ...S.td, ...S.muted }}>{formatDate(kp.iat)}</td>
-                        <td style={S.td}>
-                          <span style={S.pill('local')}>Local only</span>
-                        </td>
-                        <td style={S.tdActions}>
-                          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                            <Button label="↑ Publish" color="secondary" size="small" onClick={() => {}} disabled />
-                            <Button label="✕ Revoke"  color="error"     size="small" onClick={() => {}} disabled />
-                          </div>
-                        </td>
+              <>
+                <div style={S.tableWrap}>
+                  <table style={S.table}>
+                    <thead>
+                      <tr>
+                        <th style={S.th}>Email</th>
+                        <th style={S.th}>Key ID (sign)</th>
+                        <th style={S.th}>Key ID (ecdh)</th>
+                        <th style={S.th}>Created</th>
+                        <th style={S.th}>Expires</th>
+                        <th style={S.th}>WKD</th>
+                        <th style={S.th}></th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody>
+                      {selfKeys.map(kp => {
+                        const wkdStatus = wkdStatuses.get(kp.email) ?? 'local';
+                        const isPublishing = publishingEmail === kp.email;
+                        return (
+                          <tr className="pgp-tr" key={`${kp.email}:${kp.iat}`}>
+                            <td style={S.td}>{kp.email}</td>
+                            <td style={{ ...S.td, ...S.mono }}>{shortKid(kp.kidSign)}</td>
+                            <td style={{ ...S.td, ...S.mono }}>{shortKid(kp.kidEcdh)}</td>
+                            <td style={{ ...S.td, ...S.muted }}>{formatDate(kp.iat)}</td>
+                            <td style={{ ...S.td, ...S.muted }}>{kp.exp ? formatDate(kp.exp) : '—'}</td>
+                            <td style={S.td}>
+                              <span style={S.pill(wkdStatus)}>
+                                {wkdStatus === 'checking' ? 'Checking…' : wkdStatus === 'published' ? 'Published' : 'Local'}
+                              </span>
+                            </td>
+                            <td style={S.tdActions}>
+                              <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                                {wkdStatus === 'checking' ? (
+                                  <Button label="↑ Publish" color="secondary" size="small" disabled onClick={() => {}} />
+                                ) : wkdStatus === 'local' ? (
+                                  <Button
+                                    label={isPublishing ? 'Publishing…' : '↑ Publish'}
+                                    color="secondary"
+                                    size="small"
+                                    disabled={isPublishing}
+                                    onClick={() => handlePublish(kp)}
+                                  />
+                                ) : (
+                                  <Button
+                                    label="↻ Rotate"
+                                    color="secondary"
+                                    size="small"
+                                    disabled={isPublishing || !genToken}
+                                    onClick={() => { setRotateError(null); setRotateTarget(kp); }}
+                                  />
+                                )}
+                                <Button label="✕ Revoke"  color="error"     size="small" onClick={() => { setRevokeError(null); setRevokeTarget(kp); }} />
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                {publishError && (
+                  <div style={{ padding: '10px 16px', background: '#fff5f5', borderTop: '1px solid #fed7d7', display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 13, color: '#c53030' }}>
+                    <span>Publish failed: {publishError}</span>
+                    <Button label="Dismiss" color="secondary" size="small" onClick={() => setPublishError(null)} />
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -473,7 +639,75 @@ function PgpSettingsInner() {
           open={keygenModalOpen}
           onClose={() => setKeygenModalOpen(false)}
           onGenerated={loadKeys}
+          disabledEmails={selfKeys.map(k => k.email)}
         />
+
+        {/* Rotate key confirmation */}
+        {rotateTarget && (
+          <div style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)',
+            zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <div style={{
+              background: '#fff', borderRadius: 10, width: 440, maxWidth: '95vw',
+              boxShadow: '0 20px 60px rgba(0,0,0,.2)', overflow: 'hidden',
+            }}>
+              <div style={{ padding: '18px 20px 14px', borderBottom: '1px solid #e2e8f0' }}>
+                <Text size="large" weight="bold">Rotate Key</Text>
+              </div>
+              <div style={{ padding: 20, fontSize: 13, color: '#4a5568', lineHeight: 1.6 }}>
+                <p>Rotate the key for <strong>{rotateTarget.email}</strong>?</p>
+                <p style={{ marginTop: 8 }}>
+                  This will revoke the current WKD entry, delete both keys from the HSM,
+                  generate a new key pair, and publish the new key to WKD.
+                </p>
+                <p style={{ marginTop: 8, color: '#c53030' }}>
+                  ⚠ Emails encrypted to the old key will no longer be decryptable after rotation.
+                </p>
+                {rotateError && (
+                  <p style={{ marginTop: 8, color: '#c53030' }}>{rotateError}</p>
+                )}
+              </div>
+              <div style={{ padding: '14px 20px', borderTop: '1px solid #e2e8f0', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                <Button label="Cancel"     color="secondary" onClick={() => setRotateTarget(null)} disabled={rotating} />
+                <Button label="Rotate Key" color="primary"   onClick={handleRotateConfirm}         disabled={rotating} />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Revoke own key confirmation */}
+        {revokeTarget && (
+          <div style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)',
+            zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <div style={{
+              background: '#fff', borderRadius: 10, width: 420, maxWidth: '95vw',
+              boxShadow: '0 20px 60px rgba(0,0,0,.2)', overflow: 'hidden',
+            }}>
+              <div style={{ padding: '18px 20px 14px', borderBottom: '1px solid #e2e8f0' }}>
+                <Text size="large" weight="bold">Revoke Key</Text>
+              </div>
+              <div style={{ padding: 20, fontSize: 13, color: '#4a5568', lineHeight: 1.6 }}>
+                <p>Revoke the key for <strong>{revokeTarget.email}</strong>?</p>
+                <p style={{ marginTop: 8 }}>
+                  This will remove the public key from WKD (if published) and delete both keys from the HSM.
+                </p>
+                <p style={{ marginTop: 8, color: '#c53030' }}>
+                  ⚠ This cannot be undone. Emails encrypted to this key will no longer be decryptable.
+                </p>
+                {revokeError && (
+                  <p style={{ marginTop: 8, color: '#c53030' }}>{revokeError}</p>
+                )}
+              </div>
+              <div style={{ padding: '14px 20px', borderTop: '1px solid #e2e8f0', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                <Button label="Cancel"     color="secondary" onClick={() => setRevokeTarget(null)} disabled={revoking} />
+                <Button label="Revoke Key" color="error"     onClick={handleRevokeConfirm}         disabled={revoking} />
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Remove peer key confirmation */}
         {removeTarget && (

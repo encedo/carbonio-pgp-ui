@@ -99,6 +99,7 @@ interface Props {
   open: boolean;
   onClose: () => void;
   onGenerated: () => void;
+  disabledEmails?: string[];  // emails that already have keys — excluded from dropdown
 }
 
 interface GeneratedKey {
@@ -125,13 +126,14 @@ function Spinner() {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export function KeygenModal({ open, onClose, onGenerated }: Props) {
+export function KeygenModal({ open, onClose, onGenerated, disabledEmails = [] }: Props) {
   const { hem, genToken, authorize } = useHsm();
 
   const account  = useUserAccount();
   const settings = useUserSettings();
 
-  const emails  = getAccountEmails(account, settings);
+  const allEmails     = getAccountEmails(account, settings);
+  const availableEmails = allEmails.filter(e => !disabledEmails.includes(e));
   const wkdBase = `https://${window.location.hostname}/wkd`;
 
   const [email,      setEmail]      = useState('');
@@ -145,7 +147,7 @@ export function KeygenModal({ open, onClose, onGenerated }: Props) {
   // Set default email when modal opens
   useEffect(() => {
     if (open) {
-      setEmail(emails[0] ?? '');
+      setEmail(availableEmails[0] ?? '');
       setPhase('form');
       setError(null);
       setGenerated(null);
@@ -186,7 +188,7 @@ export function KeygenModal({ open, onClose, onGenerated }: Props) {
       const { buildCertificate } = await import('../../../encedo-pgp-js/dist/encedo-pgp.browser.js');
       const { cert } = await buildCertificate(
         hem, useToken, kidSign, kidEcdh, email,
-        { ecdhToken: useEcdhToken, timestamp: iat },
+        { ecdhToken: useEcdhToken, timestamp: iat, expiryTimestamp: exp },
       );
 
       setGenerated({ kidSign, kidEcdh, email, cert });
@@ -235,10 +237,14 @@ export function KeygenModal({ open, onClose, onGenerated }: Props) {
 
             <div style={{ marginBottom: 16 }}>
               <label style={LABEL}>Email address</label>
-              {emails.length > 1 ? (
+              {availableEmails.length > 1 ? (
                 <select style={SELECT} value={email} onChange={e => setEmail(e.target.value)}>
-                  {emails.map(e => <option key={e} value={e}>{e}</option>)}
+                  {availableEmails.map(e => <option key={e} value={e}>{e}</option>)}
                 </select>
+              ) : availableEmails.length === 0 ? (
+                <div style={{ ...SELECT, background: '#f7fafc', cursor: 'default', color: '#a0aec0' }}>
+                  All email addresses already have keys
+                </div>
               ) : (
                 <div style={{ ...SELECT, background: '#f7fafc', cursor: 'default', color: '#4a5568' }}>
                   {email || '—'}

@@ -1,5 +1,13 @@
 import React, { createContext, useCallback, useContext, useRef, useState } from 'react';
 import { HEM } from '../../../hem-sdk-js/hem-sdk.browser.js';
+import { patchWebCrypto } from '../lib/webcrypto-patch';
+
+// Preload encedo-pgp.browser.js as soon as we know crypto is available,
+// so openpgp.js module-level code runs while window.crypto.subtle is intact.
+function preloadEncedoPgp() {
+  patchWebCrypto();
+  import('../../../encedo-pgp-js/dist/encedo-pgp.browser.js').catch(() => {/* ignore */});
+}
 
 // ── DESCR helpers ─────────────────────────────────────────────────────────────
 
@@ -143,6 +151,7 @@ export function HsmProvider({ children }: { children: React.ReactNode }) {
       }
 
       setState(s => ({ ...s, hem, listToken, impToken, genToken, connected: true, unlocked: true, error: null }));
+      preloadEncedoPgp();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setState(s => ({ ...s, connected: false, unlocked: false, impToken: null, genToken: null, error: msg }));
