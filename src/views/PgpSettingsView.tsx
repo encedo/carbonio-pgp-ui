@@ -156,6 +156,12 @@ const S = {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/** Read Carbonio auth token from browser cookies (ZM_AUTH_TOKEN). */
+function getCarbonioAuthToken(): string | undefined {
+  const match = document.cookie.match(/(?:^|;\s*)ZM_AUTH_TOKEN=([^;]+)/);
+  return match ? decodeURIComponent(match[1]) : undefined;
+}
+
 function formatDate(ts: number): string {
   return new Date(ts * 1000).toISOString().slice(0, 10);
 }
@@ -277,6 +283,7 @@ function PgpSettingsInner() {
     setPublishError(null);
     try {
       const wkdBase = `https://${window.location.hostname}/wkd`;
+      const authToken    = getCarbonioAuthToken();
       const useToken     = await authorize(`keymgmt:use:${kp.kidSign}`);
       const useEcdhToken = await authorize(`keymgmt:use:${kp.kidEcdh}`);
       patchWebCrypto();
@@ -284,7 +291,7 @@ function PgpSettingsInner() {
       const { cert } = await buildCertificate(hem, useToken, kp.kidSign, kp.kidEcdh, kp.email, {
         ecdhToken: useEcdhToken, timestamp: kp.iat, expiryTimestamp: kp.exp,
       });
-      await publishKey(wkdBase, kp.email, cert);
+      await publishKey(wkdBase, kp.email, cert, authToken);
       setWkdStatuses(prev => { const next = new Map(prev); next.set(kp.email, 'published'); return next; });
     } catch (e: unknown) {
       setPublishError(e instanceof Error ? e.message : String(e));
@@ -300,10 +307,11 @@ function PgpSettingsInner() {
     try {
       const wkdBase = `https://${window.location.hostname}/wkd`;
       // 1. Revoke from WKD (ignore 404)
+      const authToken = getCarbonioAuthToken();
       try {
         patchWebCrypto();
         const { revokeKey } = await import('../../../encedo-pgp-js/dist/encedo-pgp.browser.js');
-        await revokeKey(wkdBase, rotateTarget.email);
+        await revokeKey(wkdBase, rotateTarget.email, authToken);
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         if (!msg.includes('404')) throw e;
@@ -331,7 +339,7 @@ function PgpSettingsInner() {
       const { cert } = await buildCertificate(hem, useToken, kidSign, kidEcdh, rotateTarget.email, {
         ecdhToken: useEcdhToken, timestamp: iat, expiryTimestamp: exp,
       });
-      await publishKey(wkdBase, rotateTarget.email, cert);
+      await publishKey(wkdBase, rotateTarget.email, cert, authToken);
       setRotateTarget(null);
       loadKeys();
     } catch (e: unknown) {
@@ -348,10 +356,11 @@ function PgpSettingsInner() {
     try {
       const wkdBase = `https://${window.location.hostname}/wkd`;
       // WKD revoke first — ignore 404 (key may not have been published)
+      const authToken = getCarbonioAuthToken();
       try {
         patchWebCrypto();
         const { revokeKey } = await import('../../../encedo-pgp-js/dist/encedo-pgp.browser.js');
-        await revokeKey(wkdBase, revokeTarget.email);
+        await revokeKey(wkdBase, revokeTarget.email, authToken);
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         if (!msg.includes('404')) throw e;
