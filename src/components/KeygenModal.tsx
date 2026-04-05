@@ -99,6 +99,7 @@ interface Props {
   open: boolean;
   onClose: () => void;
   onGenerated: () => void;
+  onPublished?: (email: string) => void;  // called after successful WKD publish
   disabledEmails?: string[];  // emails that already have keys — excluded from dropdown
 }
 
@@ -126,7 +127,7 @@ function Spinner() {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export function KeygenModal({ open, onClose, onGenerated, disabledEmails = [] }: Props) {
+export function KeygenModal({ open, onClose, onGenerated, onPublished, disabledEmails = [] }: Props) {
   const { hem, genToken, authorize } = useHsm();
 
   const account  = useUserAccount();
@@ -207,9 +208,11 @@ export function KeygenModal({ open, onClose, onGenerated, disabledEmails = [] }:
     setPublishing(true);
     try {
       patchWebCrypto();
+      const authToken = document.cookie.match(/(?:^|;\s*)ZM_AUTH_TOKEN=([^;]+)/)?.[1];
       const { publishKey } = await import('../../../encedo-pgp-js/dist/encedo-pgp.browser.js');
-      await publishKey(wkdBase, generated.email, generated.cert);
+      await publishKey(wkdBase, generated.email, generated.cert, authToken ? decodeURIComponent(authToken) : undefined);
       setPublished(true);
+      onPublished?.(generated.email);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {

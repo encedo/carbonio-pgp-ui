@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { HEM } from '../../../hem-sdk-js/hem-sdk.browser.js';
 import { patchWebCrypto } from '../lib/webcrypto-patch';
 
@@ -68,9 +68,9 @@ export const DESCR = {
 export interface HsmState {
   url: string;
   hem: InstanceType<typeof HEM> | null;
-  listToken: string | null;   // keymgmt:list
-  impToken:  string | null;   // keymgmt:imp
-  genToken:  string | null;   // keymgmt:gen
+  listToken: string | null;
+  impToken:  string | null;
+  genToken:  string | null;
   connected: boolean;
   unlocked:  boolean;
   error:     string | null;
@@ -80,62 +80,72 @@ export interface HsmContextValue extends HsmState {
   setUrl: (url: string) => void;
   connect: (password: string) => Promise<void>;
   disconnect: () => void;
-  /** Obtain a fresh token for any scope (uses in-memory password) */
   authorize: (scope: string) => Promise<string>;
 }
 
-// ── Context ───────────────────────────────────────────────────────────────────
-
-const HsmContext = createContext<HsmContextValue | null>(null);
+// ── Module-level singleton — survives React unmount/remount ───────────────────
 
 const HSM_URL_KEY = 'pgp-hsm-url';
 const HSM_PW_KEY  = 'pgp-hsm-password';
+const TOKEN_TTL   = 8 * 3600;
 
-const TOKEN_TTL = 8 * 3600;  // 8 hours, in seconds
-
-export function HsmProvider({ children }: { children: React.ReactNode }) {
-  // Password kept in memory only (not in React state to avoid re-renders)
-  const passwordRef = useRef<string>('');
-  // Token cache: scope → { token, expiresAt (ms) }
-  const tokenCache  = useRef<Map<string, { token: string; expiresAt: number }>>(new Map());
-
-  const [state, setState] = useState<HsmState>(() => ({
-    url: localStorage.getItem(HSM_URL_KEY) ?? '',
-    hem: null,
+// Mutable singleton — shared across all HsmProvider instances/remounts
+const _singleton = {
+  password:   '' as string,
+  tokenCache: new Map<string, { token: string; expiresAt: number }>(),
+  state: {
+    url:       localStorage.getItem(HSM_URL_KEY) ?? '',
+    hem:       null,
     listToken: null,
     impToken:  null,
     genToken:  null,
     connected: false,
     unlocked:  false,
     error:     null,
-  }));
+  } as HsmState,
+};
 
-  // Authorize with cache — reuses token if still valid, fetches new one otherwise
-  const authorizeWithCache = async (hem: InstanceType<typeof HEM>, password: string, scope: string): Promise<string> => {
-    const cached = tokenCache.current.get(scope);
-    if (cached && Date.now() < cached.expiresAt) return cached.token;
-    const token = await hem.authorizePassword(password, scope, TOKEN_TTL);
-    tokenCache.current.set(scope, { token, expiresAt: Date.now() + TOKEN_TTL * 1000 - 30_000 });
-    return token;
-  };
+// ── Context ───────────────────────────────────────────────────────────────────
+
+const HsmContext = createContext<HsmContextValue | null>(null);
+
+async function authorizeWithCache(hem: InstanceType<typeof HEM>, password: string, scope: string): Promise<string> {
+  const cached = _singleton.tokenCache.get(scope);
+  if (cached && Date.now() < cached.expiresAt) return cached.token;
+  const token = await hem.authorizePassword(password, scope, TOKEN_TTL);
+  _singleton.tokenCache.set(scope, { token, expiresAt: Date.now() + TOKEN_TTL * 1000 - 30_000 });
+  return token;
+}
+
+export function HsmProvider({ children }: { children: React.ReactNode }) {
+  // Initialize React state from singleton — picks up state after remount
+  const [state, setState] = useState<HsmState>(() => ({ ..._singleton.state }));
+
+  // Keep singleton in sync whenever React state changes
+  useEffect(() => {
+    _singleton.state = state;
+  }, [state]);
 
   const setUrl = useCallback((url: string) => {
     localStorage.setItem(HSM_URL_KEY, url);
-    passwordRef.current = '';
-    tokenCache.current.clear();
-    setState(s => ({
-      ...s, url,
+    _singleton.password = '';
+    _singleton.tokenCache.clear();
+    const next: HsmState = {
+      ...state,
+      url,
       hem: null, listToken: null, impToken: null, genToken: null,
       connected: false, unlocked: false, error: null,
-    }));
-  }, []);
+    };
+    _singleton.state = next;
+    setState(next);
+  }, [state]);
 
   const connect = useCallback(async (password: string) => {
     setState(s => ({ ...s, error: null }));
     try {
-      const hem = new HEM(state.url);
+      const hem = new HEM(_singleton.state.url);
       await hem.hemCheckin();
-      tokenCache.current.clear();
+      _singleton.tokenCache.clear();
 
       const listToken = await authorizeWithCache(hem, password, 'keymgmt:list');
 
@@ -145,38 +155,51 @@ export function HsmProvider({ children }: { children: React.ReactNode }) {
       let genToken: string | null = null;
       try { genToken = await authorizeWithCache(hem, password, 'keymgmt:gen'); } catch { /* optional */ }
 
-      passwordRef.current = password;
+      _singleton.password = password;
       if (sessionStorage.getItem(HSM_PW_KEY)) {
         sessionStorage.setItem(HSM_PW_KEY, password);
       }
 
-      setState(s => ({ ...s, hem, listToken, impToken, genToken, connected: true, unlocked: true, error: null }));
+      const next: HsmState = {
+        ..._singleton.state,
+        hem, listToken, impToken, genToken,
+        connected: true, unlocked: true, error: null,
+      };
+      _singleton.state = next;
+      setState(next);
       preloadEncedoPgp();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      setState(s => ({ ...s, connected: false, unlocked: false, impToken: null, genToken: null, error: msg }));
+      const next: HsmState = {
+        ..._singleton.state,
+        connected: false, unlocked: false, impToken: null, genToken: null, error: msg,
+      };
+      _singleton.state = next;
+      setState(next);
       throw e;
     }
-  }, [state.url]);
+  }, []);
 
   const disconnect = useCallback(() => {
     sessionStorage.removeItem(HSM_PW_KEY);
-    passwordRef.current = '';
-    tokenCache.current.clear();
-    setState(s => ({
-      ...s,
+    _singleton.password = '';
+    _singleton.tokenCache.clear();
+    const next: HsmState = {
+      ..._singleton.state,
       hem: null, listToken: null, impToken: null, genToken: null,
       connected: false, unlocked: false, error: null,
-    }));
+    };
+    _singleton.state = next;
+    setState(next);
   }, []);
 
   const authorize = useCallback(async (scope: string): Promise<string> => {
-    const { hem } = state;
+    const { hem } = _singleton.state;
     if (!hem) throw new Error('HSM not connected');
-    const pw = passwordRef.current || sessionStorage.getItem(HSM_PW_KEY) || '';
+    const pw = _singleton.password || sessionStorage.getItem(HSM_PW_KEY) || '';
     if (!pw) throw new Error('Password not available — please unlock HSM again');
     return authorizeWithCache(hem, pw, scope);
-  }, [state]);
+  }, []);
 
   return (
     <HsmContext.Provider value={{ ...state, setUrl, connect, disconnect, authorize }}>

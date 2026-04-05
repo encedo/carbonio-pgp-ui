@@ -1,21 +1,16 @@
-import { addRoute, addSettingsView, registerFunctions } from '@zextras/carbonio-shell-ui';
+import { addRoute, registerFunctions } from '@zextras/carbonio-shell-ui';
+import { HsmProvider } from './store/HsmContext';
 import { PgpSettingsView } from './views/PgpSettingsView';
 
 const APP_ID = 'carbonio-pgp-ui';
 
-export default function App() {
-  // Register Settings panel (Phase 1)
-  addSettingsView({
-    id: APP_ID,
-    app: APP_ID,
-    route: 'pgp',
-    component: PgpSettingsView,
-    icon: 'LockOutline',
-    label: 'PGP Encryption',
-    position: 20,
-  });
+// Defined at module level so the reference is stable — HsmProvider never unmounts.
+function PgpView() {
+  return <HsmProvider><PgpSettingsView /></HsmProvider>;
+}
 
-  // Register main nav route (same view for now)
+export default function App() {
+  // Register main nav route
   addRoute({
     id: APP_ID,
     app: APP_ID,
@@ -24,7 +19,7 @@ export default function App() {
     visible: true,
     label: 'PGP',
     primaryBar: 'LockOutline',
-    appView: PgpSettingsView,
+    appView: PgpView,
     badge: { show: false },
   });
 

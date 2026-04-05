@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Button, Icon, Input, Spinner, Text } from '@zextras/carbonio-design-system';
-import { HsmProvider, decodeDescr, useHsm, DESCR_PREFIX, DESCR, encodeDescr } from '../store/HsmContext';
+import { decodeDescr, useHsm, DESCR_PREFIX, DESCR, encodeDescr } from '../store/HsmContext';
 import { patchWebCrypto } from '../lib/webcrypto-patch';
 import { wkdFetch } from '../lib/wkd-fetch';
 import { HsmUrlModal } from '../components/HsmUrlModal';
@@ -648,6 +648,7 @@ function PgpSettingsInner() {
           open={keygenModalOpen}
           onClose={() => setKeygenModalOpen(false)}
           onGenerated={loadKeys}
+          onPublished={(email) => setWkdStatuses(prev => { const next = new Map(prev); next.set(email, 'published'); return next; })}
           disabledEmails={selfKeys.map(k => k.email)}
         />
 
@@ -755,9 +756,5 @@ function PgpSettingsInner() {
 // ── Exported component ────────────────────────────────────────────────────────
 
 export function PgpSettingsView() {
-  return (
-    <HsmProvider>
-      <PgpSettingsInner />
-    </HsmProvider>
-  );
+  return <PgpSettingsInner />;
 }

@@ -63,6 +63,21 @@ const TAG_PUBLIC_SUBKEY = 14;
 const ALGO_EDDSA = 22;
 const ALGO_ECDH  = 18;
 
+// Supported OIDs (byte sequences after the OID length byte in the packet body)
+// Ed25519:  1.3.6.1.4.1.11591.15.1  — 9 bytes
+// X25519:   1.3.6.1.4.1.3029.1.5.1  — 10 bytes
+const OID_ED25519 = new Uint8Array([0x2b, 0x06, 0x01, 0x04, 0x01, 0xda, 0x47, 0x0f, 0x01]);
+const OID_X25519  = new Uint8Array([0x2b, 0x06, 0x01, 0x04, 0x01, 0x97, 0x55, 0x01, 0x05, 0x01]);
+
+function oidMatches(body: Uint8Array, expected: Uint8Array): boolean {
+  const oidLen = body[6];
+  if (oidLen !== expected.length) return false;
+  for (let i = 0; i < oidLen; i++) {
+    if (body[7 + i] !== expected[i]) return false;
+  }
+  return true;
+}
+
 function parsePackets(data: Uint8Array): Array<{ tag: number; body: Uint8Array }> {
   const packets: Array<{ tag: number; body: Uint8Array }> = [];
   let i = 0;
@@ -139,9 +154,13 @@ export async function wkdLookupParse(email: string): Promise<WkdKeyInfo> {
 
   for (const pkt of packets) {
     if (pkt.tag === TAG_PUBLIC_KEY && pkt.body[5] === ALGO_EDDSA) {
+      if (!oidMatches(pkt.body, OID_ED25519))
+        throw new Error(`Unsupported EdDSA curve in WKD key for ${email} (only Ed25519 is supported)`);
       signRaw32 = extractRaw32(pkt.body);
     }
     if (pkt.tag === TAG_PUBLIC_SUBKEY && pkt.body[5] === ALGO_ECDH) {
+      if (!oidMatches(pkt.body, OID_X25519))
+        throw new Error(`Unsupported ECDH curve in WKD key for ${email} (only X25519 / Curve25519 is supported)`);
       ecdhRaw32 = extractRaw32(pkt.body);
     }
   }
