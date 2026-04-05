@@ -89,8 +89,9 @@ const HSM_URL_KEY = 'pgp-hsm-url';
 const HSM_PW_KEY  = 'pgp-hsm-password';
 const TOKEN_TTL   = 8 * 3600;
 
-// Mutable singleton — shared across all HsmProvider instances/remounts
-const _singleton = {
+// Mutable singleton — shared across all HsmProvider instances/remounts.
+// Exported so app.tsx can expose HSM state to mails-ui via window globals.
+export const _singleton = {
   password:   '' as string,
   tokenCache: new Map<string, { token: string; expiresAt: number }>(),
   state: {

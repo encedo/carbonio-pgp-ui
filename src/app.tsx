@@ -1,8 +1,16 @@
 import { addRoute, registerFunctions } from '@zextras/carbonio-shell-ui';
-import { HsmProvider } from './store/HsmContext';
+import { HsmProvider, _singleton } from './store/HsmContext';
+import { wkdFetch } from './lib/wkd-fetch';
 import { PgpSettingsView } from './views/PgpSettingsView';
 
 const APP_ID = 'carbonio-pgp-ui';
+
+// Expose HSM singleton and WKD check to mails-ui via well-known window properties.
+// mails-ui runs in the same browser context so window access is safe.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(window as any).__encedoPgpGetHsm = () => _singleton.state;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(window as any).__encedoPgpCheckWkd = (email: string) => wkdFetch(email).then(r => r !== null);
 
 // Defined at module level so the reference is stable — HsmProvider never unmounts.
 function PgpView() {
