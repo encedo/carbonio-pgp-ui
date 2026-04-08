@@ -3,8 +3,6 @@ name: Build
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -52,11 +50,42 @@ jobs:
 
       - name: Build
         working-directory: carbonio-pgp-ui
-        run: bash build-zip.sh
+        run: npm run build
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Install makedeb
+        run: |
+          wget -qO - 'https://proget.makedeb.org/debian-feeds/makedeb.pub' \
+            | gpg --dearmor \
+            | sudo tee /usr/share/keyrings/makedeb-archive-keyring.gpg > /dev/null
+          echo 'deb [signed-by=/usr/share/keyrings/makedeb-archive-keyring.gpg arch=all] https://proget.makedeb.org/ makedeb main' \
+            | sudo tee /etc/apt/sources.list.d/makedeb.list
+          sudo apt-get update -q
+          sudo apt-get install -y makedeb
+
+      - name: Build .deb
+        id: deb
+        working-directory: carbonio-pgp-ui/dist/package
+        run: |
+          PKG_VERSION=$(node -p "require('../../package.json').version")
+          PKG_REL="1+HEM${{ github.run_number }}"
+
+          sed -i "s/^pkgrel=.*/pkgrel=\"${PKG_REL}\"/" PKGBUILD
+
+          # Source tarball expected by PKGBUILD
+          tar -czf carbonio-pgp-ui-dist.tar.gz -C ../.. dist/
+
+          makedeb -s --no-confirm
+
+          DEB=$(ls *.deb | head -1)
+          echo "deb_file=carbonio-pgp-ui/dist/package/${DEB}" >> $GITHUB_OUTPUT
+          echo "version=${PKG_VERSION}-${PKG_REL}" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: carbonio-pgp-ui-${{ github.sha }}
-          path: carbonio-pgp-ui/carbonio-pgp-ui.zip
-          retention-days: 30
+          tag_name: v${{ steps.deb.outputs.version }}
+          name: v${{ steps.deb.outputs.version }}
+          files: ${{ steps.deb.outputs.deb_file }}
+          generate_release_notes: false
+          body: |
+            Build ${{ github.run_number }} — commit ${{ github.sha }}
