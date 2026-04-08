@@ -63,30 +63,17 @@ async function localDecryptPkesk(
   algoId: number,
   hem: any, token: string, kid_ecdh: string,
 ): Promise<{ data: Uint8Array; algorithm: openpgp.SessionKey['algorithm'] }> {
-  try {
-    // Strip 0x40 native prefix if present
-    const ephemeral32 = (ephemeralWithPrefix.length === 33 && ephemeralWithPrefix[0] === 0x40)
-      ? ephemeralWithPrefix.slice(1)
-      : ephemeralWithPrefix;
-    console.error('[pgp-decrypt] step1 ephemeral32.length:', ephemeral32.length, 'fingerprint.length:', fingerprint.length);
-    const ephemeralB64 = btoa(String.fromCharCode(...Array.from(ephemeral32)));
-    console.error('[pgp-decrypt] step2 ephemeralB64.length:', ephemeralB64.length);
-    const sharedSecret: Uint8Array = await hem.ecdh(token, kid_ecdh, ephemeralB64);
-    console.error('[pgp-decrypt] step3 sharedSecret.length:', sharedSecret?.length, sharedSecret?.constructor?.name);
-    const sharedSecretCopy = new Uint8Array(sharedSecret); // ensure own buffer
-    const kwk = await rfc6637kdfLocal(sharedSecretCopy, fingerprint);
-    console.error('[pgp-decrypt] step4 kwk.length:', kwk.length);
-    const unwrapped = await aesKwUnwrapLocal(kwk, wrappedKey);
-    console.error('[pgp-decrypt] step5 unwrapped.length:', unwrapped.length);
-    const sessionKeyData = stripSessionKeyEncoding(unwrapped);
-    console.error('[pgp-decrypt] step6 sessionKeyData.length:', sessionKeyData.length);
-    const algoName = openpgp.enums.read(openpgp.enums.symmetric, algoId) as openpgp.SessionKey['algorithm'];
-    console.error('[pgp-decrypt] step7 algoName:', algoName);
-    return { data: sessionKeyData, algorithm: algoName };
-  } catch (e) {
-    console.error('[pgp-decrypt] localDecryptPkesk internal error at step above:', e instanceof Error ? e.message : String(e), e);
-    throw e;
-  }
+  // Strip 0x40 native prefix if present
+  const ephemeral32 = (ephemeralWithPrefix.length === 33 && ephemeralWithPrefix[0] === 0x40)
+    ? ephemeralWithPrefix.slice(1)
+    : ephemeralWithPrefix;
+  const ephemeralB64 = btoa(String.fromCharCode(...Array.from(ephemeral32)));
+  const sharedSecret: Uint8Array = await hem.ecdh(token, kid_ecdh, ephemeralB64);
+  const kwk = await rfc6637kdfLocal(new Uint8Array(sharedSecret), fingerprint);
+  const unwrapped = await aesKwUnwrapLocal(kwk, wrappedKey);
+  const sessionKeyData = stripSessionKeyEncoding(unwrapped);
+  const algoName = openpgp.enums.read(openpgp.enums.symmetric, algoId) as openpgp.SessionKey['algorithm'];
+  return { data: sessionKeyData, algorithm: algoName };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -288,6 +275,7 @@ type PgpDecryptParams = {
   armored: string;          // armored PGP MESSAGE (encrypt) or PGP SIGNED MESSAGE (sign)
   mode: 'encrypt' | 'sign';
   senderEmail?: string;     // for sig verification
+  recipientEmail?: string;  // our address the mail was sent to — direct key lookup, no WKD scan
 };
 
 type PgpDecryptResult = {
@@ -321,28 +309,37 @@ type PgpDecryptResult = {
   if (!hem || !listToken) throw new Error('HSM not connected — unlock HSM to decrypt');
 
   const allKeys = await hem.searchKeys(listToken, 'ETSPGP:');
-  // Find own ECDH key
+  // Find ALL own ECDH keys (user may have keys for multiple email addresses)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const selfEcdhKey = allKeys.find((k: any) => { const d = decodeDescr(k); return d?.role === 'self' && d?.keyType === 'ecdh'; });
-  if (!selfEcdhKey) throw new Error('No ECDH key found in HSM');
+  const selfEcdhKeys = allKeys.filter((k: any) => { const d = decodeDescr(k); return d?.role === 'self' && d?.keyType === 'ecdh'; });
+  if (!selfEcdhKeys.length) throw new Error('No ECDH key found in HSM');
 
-  const ecdhToken = await authorizeScope(`keymgmt:use:${selfEcdhKey.kid}`);
-
-  // Find email from decodeDescr
+  // Build email → candidate map from DESCR (no WKD needed — fingerprints resolved lazily via cache)
+  interface EcdhCandidate { kid: string; email: string; token: string }
+  const ecdhByEmail = new Map<string, EcdhCandidate>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const ecdhDescr = decodeDescr(selfEcdhKey as any);
-  const myEmail = ecdhDescr?.email;
-  if (!myEmail) throw new Error('Cannot determine email from ECDH key descriptor');
+  for (const ecdhKey of selfEcdhKeys as any[]) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const myEmail = decodeDescr(ecdhKey as any)?.email;
+    if (!myEmail) continue;
+    const token = await authorizeScope(`keymgmt:use:${ecdhKey.kid}`);
+    ecdhByEmail.set(myEmail, { kid: ecdhKey.kid, email: myEmail, token });
+  }
+  if (!ecdhByEmail.size) throw new Error('No self ECDH key found in HSM');
 
-  const myKeyBytes = await wkdFetch(myEmail);
-  if (!myKeyBytes) throw new Error(`No WKD key for ${myEmail} — cannot get fingerprint for decryption`);
-  const myPubKey = await openpgp.readKey({ binaryKey: myKeyBytes });
-  const ecdhSubkeys = myPubKey.getSubkeys();
-  if (!ecdhSubkeys.length) throw new Error('No ECDH subkey in WKD cert');
-  const ecdhSubkey = ecdhSubkeys[0];
-  const ecdhFingerprint = Uint8Array.from(
-    ecdhSubkey.getFingerprint().match(/.{2}/g)!.map((b: string) => parseInt(b, 16))
-  );
+  /** Returns ECDH subkey fingerprint for the given email — fetches WKD once then caches. */
+  async function getEcdhFingerprint(email: string): Promise<Uint8Array | null> {
+    const cached = _singleton.ecdhFingerprintCache.get(email);
+    if (cached) return cached;
+    const keyBytes = await wkdFetch(email);
+    if (!keyBytes) return null;
+    const subkeys = (await openpgp.readKey({ binaryKey: keyBytes })).getSubkeys();
+    if (!subkeys.length) return null;
+    const fpHex = subkeys[0].getFingerprint();
+    const fp = Uint8Array.from(fpHex.match(/.{2}/g)!.map((b: string) => parseInt(b, 16)));
+    _singleton.ecdhFingerprintCache.set(email, fp);
+    return fp;
+  }
 
   // Parse message using webpack openpgp
   const message = await openpgp.readMessage({ armoredMessage: params.armored });
@@ -350,35 +347,46 @@ type PgpDecryptResult = {
   const pkeskPackets = (message.packets as any).filterByTag(openpgp.enums.packet.publicKeyEncryptedSessionKey);
   if (!pkeskPackets.length) throw new Error('No PKESK packet found');
 
+  // If recipientEmail known: direct lookup (O(1), single cache hit).
+  // Otherwise: try all self ECDH keys (each fingerprint fetched once then cached).
+  const candidatesToTry: EcdhCandidate[] = params.recipientEmail
+    ? [ecdhByEmail.get(params.recipientEmail)].filter((c): c is EcdhCandidate => !!c)
+    : [...ecdhByEmail.values()];
+
   let sessionKey: openpgp.SessionKey | null = null;
   let lastErr: unknown = null;
   for (const pkesk of pkeskPackets) {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const pkeskAny = pkesk as any;
-      const encKeys = Object.keys(pkeskAny.encrypted ?? {});
-      // Legacy ECDH (algo 18): { V: MPI with 0x40 prefix, C: ECDHSymmetricKey with .data }
-      // New X25519 (algo 25):  { ephemeralPublicKey: 32 bytes, C: ECDHXSymmetricKey with .wrappedKey }
-      let ephemeral: Uint8Array;
-      let wrapped: Uint8Array;
-      let algoId: number;
-      if (encKeys.includes('V')) {
-        ephemeral = pkeskAny.encrypted.V;
-        wrapped = pkeskAny.encrypted.C.data;
-        algoId = pkeskAny.sessionKeyAlgorithm ?? openpgp.enums.symmetric.aes256;
-      } else if (encKeys.includes('ephemeralPublicKey')) {
-        ephemeral = pkeskAny.encrypted.ephemeralPublicKey;
-        wrapped = pkeskAny.encrypted.C.wrappedKey;
-        algoId = pkeskAny.sessionKeyAlgorithm ?? openpgp.enums.symmetric.aes256;
-      } else {
-        throw new Error(`Unknown PKESK encrypted structure: keys=${encKeys.join(',')}`);
-      }
-      const raw = await localDecryptPkesk(ephemeral, wrapped, ecdhFingerprint, algoId, hem, ecdhToken, selfEcdhKey.kid);
-      sessionKey = raw;
-      break;
-    } catch (e) {
-      lastErr = e;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pkeskAny = pkesk as any;
+    const encKeys = Object.keys(pkeskAny.encrypted ?? {});
+    let ephemeral: Uint8Array;
+    let wrapped: Uint8Array;
+    let algoId: number;
+    // Legacy ECDH (algo 18): { V: MPI with 0x40 prefix, C: ECDHSymmetricKey with .data }
+    // New X25519 (algo 25):  { ephemeralPublicKey: 32 bytes, C: ECDHXSymmetricKey with .wrappedKey }
+    if (encKeys.includes('V')) {
+      ephemeral = pkeskAny.encrypted.V;
+      wrapped = pkeskAny.encrypted.C.data;
+      algoId = pkeskAny.sessionKeyAlgorithm ?? openpgp.enums.symmetric.aes256;
+    } else if (encKeys.includes('ephemeralPublicKey')) {
+      ephemeral = pkeskAny.encrypted.ephemeralPublicKey;
+      wrapped = pkeskAny.encrypted.C.wrappedKey;
+      algoId = pkeskAny.sessionKeyAlgorithm ?? openpgp.enums.symmetric.aes256;
+    } else {
+      lastErr = new Error(`Unknown PKESK encrypted structure: keys=${encKeys.join(',')}`);
+      continue;
     }
+    for (const candidate of candidatesToTry) {
+      const fingerprint = await getEcdhFingerprint(candidate.email);
+      if (!fingerprint) continue;
+      try {
+        sessionKey = await localDecryptPkesk(ephemeral, wrapped, fingerprint, algoId, hem, candidate.token, candidate.kid);
+        break;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    if (sessionKey) break;
   }
   if (!sessionKey) throw new Error(`Decryption failed: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`);
 

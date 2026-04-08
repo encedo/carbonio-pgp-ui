@@ -94,6 +94,7 @@ const TOKEN_TTL   = 8 * 3600;
 export const _singleton = {
   password:   '' as string,
   tokenCache: new Map<string, { token: string; expiresAt: number }>(),
+  ecdhFingerprintCache: new Map<string, Uint8Array>(), // email → ECDH subkey fingerprint
   state: {
     url:       localStorage.getItem(HSM_URL_KEY) ?? '',
     hem:       null,

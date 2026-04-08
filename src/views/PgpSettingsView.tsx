@@ -170,8 +170,7 @@ function formatDate(ts: number): string {
 }
 
 function shortKid(kid: string): string {
-  const hex = kid.replace(/[^a-fA-F0-9]/g, '').toUpperCase().slice(0, 16);
-  return hex.replace(/(.{4})(?=.)/g, '$1 ');
+  return kid.replace(/[^a-fA-F0-9]/g, '').toUpperCase().slice(0, 16);
 }
 
 // ── Inner view ────────────────────────────────────────────────────────────────
@@ -549,8 +548,8 @@ function PgpSettingsInner() {
                     <thead>
                       <tr>
                         <th style={S.th}>Email</th>
-                        <th style={S.th}>Key ID (sign)</th>
-                        <th style={S.th}>Key ID (ecdh)</th>
+                        <th style={S.th}>HSM KID (sign)</th>
+                        <th style={S.th}>HSM KID (ecdh)</th>
                         <th style={S.th}>Created</th>
                         <th style={S.th}>Expires</th>
                         <th style={S.th}>WKD</th>
@@ -666,8 +665,8 @@ function PgpSettingsInner() {
                     <tr>
                       <th style={S.th}>Email</th>
                       <th style={S.th}>Fingerprint (WKD)</th>
-                      <th style={S.th}>Key ID (sign)</th>
-                      <th style={S.th}>Key ID (ecdh)</th>
+                      <th style={S.th}>HSM KID (sign)</th>
+                      <th style={S.th}>HSM KID (ecdh)</th>
                       <th style={S.th}>Status</th>
                       <th style={S.th}></th>
                     </tr>

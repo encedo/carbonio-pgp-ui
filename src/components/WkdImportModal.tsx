@@ -24,9 +24,6 @@ interface Props {
 
 type Phase = 'fetching' | 'found' | 'importing' | 'done' | 'error';
 
-const ROW: React.CSSProperties = {
-  display: 'flex', gap: 32, fontSize: 13, marginTop: 12, flexWrap: 'wrap',
-};
 const LABEL: React.CSSProperties = {
   fontSize: 11, fontWeight: 600, textTransform: 'uppercase',
   letterSpacing: '.05em', color: '#718096', marginBottom: 3,
@@ -113,15 +110,9 @@ export function WkdImportModal({ open, email, onClose, onImported, existingKey }
           {phase === 'found' && keyInfo && (
             <>
               <Text>Found PGP key for <strong>{email}</strong>. Import to HSM?</Text>
-              <div style={ROW}>
-                <div>
-                  <div style={LABEL}>Ed25519 (sign)</div>
-                  <span style={MONO}>{keyInfo.signHex}</span>
-                </div>
-                <div>
-                  <div style={LABEL}>X25519 (ecdh)</div>
-                  <span style={MONO}>{keyInfo.ecdhHex}</span>
-                </div>
+              <div style={{ marginTop: 12 }}>
+                <div style={LABEL}>Fingerprint</div>
+                <span style={MONO}>{keyInfo.fingerprint}</span>
               </div>
               {existingKey && (
                 <div style={WARN_BOX}>
