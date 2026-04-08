@@ -16,6 +16,7 @@ interface KeyPair {
   exp?: number;
   kidSign: string;
   kidEcdh: string;
+  fingerprint?: string;
 }
 
 interface PeerKeyPair {
@@ -271,6 +272,10 @@ function PgpSettingsInner() {
         (async () => {
           try {
             const info = await wkdLookupParse(k.email);
+            // Store fingerprint on the key entry
+            setSelfKeys(prev => prev.map(p =>
+              p.email === k.email && p.iat === k.iat ? { ...p, fingerprint: info.fingerprint } : p
+            ));
             // Compare WKD public key with HSM public key to detect stale/wrong entries
             const useToken = await authorize(`keymgmt:use:${k.kidSign}`);
             const hsmResult = await hem!.getPubKey(useToken, k.kidSign);
@@ -543,7 +548,8 @@ function PgpSettingsInner() {
                         const wkdStatus = wkdStatuses.get(kp.email) ?? 'local';
                         const isPublishing = publishingEmail === kp.email;
                         return (
-                          <tr className="pgp-tr" key={`${kp.email}:${kp.iat}`}>
+                          <React.Fragment key={`${kp.email}:${kp.iat}`}>
+                          <tr className="pgp-tr" style={{ borderBottom: kp.fingerprint ? 'none' : undefined }}>
                             <td style={S.td}>{kp.email}</td>
                             <td style={{ ...S.td, ...S.mono }}>{shortKid(kp.kidSign)}</td>
                             <td style={{ ...S.td, ...S.mono }}>{shortKid(kp.kidEcdh)}</td>
@@ -590,6 +596,14 @@ function PgpSettingsInner() {
                               </div>
                             </td>
                           </tr>
+                          {kp.fingerprint && (
+                            <tr>
+                              <td colSpan={7} style={{ ...S.td, paddingTop: 0, paddingBottom: 8, fontFamily: 'monospace', fontSize: 11, color: '#a0aec0' }}>
+                                {kp.fingerprint}
+                              </td>
+                            </tr>
+                          )}
+                          </React.Fragment>
                         );
                       })}
                     </tbody>
