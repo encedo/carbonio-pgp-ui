@@ -28,6 +28,7 @@ echo "==> Installing carbonio-pgp-ui commit ${COMMIT:0:8}..."
 # ── Copy files ───────────────────────────────────────────────────────────────
 mkdir -p "$IRIS/carbonio-pgp-ui/$COMMIT"
 cp -r "$TMP/dist/." "$IRIS/carbonio-pgp-ui/$COMMIT/"
+chown -R zextras:zextras "$IRIS/carbonio-pgp-ui/$COMMIT/"
 echo "    Files copied to $IRIS/carbonio-pgp-ui/$COMMIT/"
 
 # ── Register in components.json ──────────────────────────────────────────────
@@ -51,6 +52,8 @@ with open(components_path, 'w') as f:
 
 print(f"    Registered: {new['name']} {new['commit'][:8]}")
 PYEOF
+
+chown zextras:zextras "$IRIS/components.json"
 
 echo ""
 echo "==> Done. Hard-reload the browser (Ctrl+Shift+R) to activate."
