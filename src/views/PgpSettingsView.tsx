@@ -176,7 +176,7 @@ function shortKid(kid: string): string {
 // ── Inner view ────────────────────────────────────────────────────────────────
 
 function PgpSettingsInner() {
-  const { url, hem, listToken, genToken, connected, unlocked, disconnect, authorize } = useHsm();
+  const { url, hem, listToken, connected, unlocked, disconnect, authorize } = useHsm();
 
   const [urlModalOpen, setUrlModalOpen] = useState(false);
   const [pwModalOpen,  setPwModalOpen]  = useState(false);
@@ -354,7 +354,7 @@ function PgpSettingsInner() {
   }
 
   async function handleRotateConfirm() {
-    if (!rotateTarget || !hem || !genToken) return;
+    if (!rotateTarget || !hem) return;
     setRotating(true);
     setRotateError(null);
     try {
@@ -376,6 +376,7 @@ function PgpSettingsInner() {
       // 3. Generate new keys (preserve TTL if known)
       const iat = Math.floor(Date.now() / 1000);
       const exp = rotateTarget.exp ? iat + (rotateTarget.exp - rotateTarget.iat) : undefined;
+      const genToken = await authorize('keymgmt:gen');
       const { kid: kidSign } = await hem.createKeyPair(
         genToken, `pgp-sign-${rotateTarget.email}`, 'ED25519',
         encodeDescr(DESCR.selfSign(rotateTarget.email, iat, exp)),
@@ -465,7 +466,7 @@ function PgpSettingsInner() {
         {/* Page title */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 24 }}>
           <Icon icon="LockOutline" size="large" color="primary" />
-          <Text size="large" weight="bold">PGP Encryption</Text>
+          <Text size="large" weight="bold">OpenPGP Encryption</Text>
         </div>
 
         {/* ── HSM Connection ─────────────────────────────────────────── */}
@@ -600,7 +601,7 @@ function PgpSettingsInner() {
                                     <Button
                                       label="↻ Rotate"
                                       color="secondary" size="small"
-                                      disabled={isPublishing || !genToken}
+                                      disabled={isPublishing}
                                       onClick={() => { setRotateError(null); setRotateTarget(kp); }}
                                     />
                                   )}

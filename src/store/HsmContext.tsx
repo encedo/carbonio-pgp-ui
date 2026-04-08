@@ -69,8 +69,6 @@ export interface HsmState {
   url: string;
   hem: InstanceType<typeof HEM> | null;
   listToken: string | null;
-  impToken:  string | null;
-  genToken:  string | null;
   connected: boolean;
   unlocked:  boolean;
   error:     string | null;
@@ -99,8 +97,6 @@ export const _singleton = {
     url:       localStorage.getItem(HSM_URL_KEY) ?? '',
     hem:       null,
     listToken: null,
-    impToken:  null,
-    genToken:  null,
     connected: false,
     unlocked:  false,
     error:     null,
@@ -135,7 +131,7 @@ export function HsmProvider({ children }: { children: React.ReactNode }) {
     const next: HsmState = {
       ...state,
       url,
-      hem: null, listToken: null, impToken: null, genToken: null,
+      hem: null, listToken: null,
       connected: false, unlocked: false, error: null,
     };
     _singleton.state = next;
@@ -151,12 +147,6 @@ export function HsmProvider({ children }: { children: React.ReactNode }) {
 
       const listToken = await authorizeWithCache(hem, password, 'keymgmt:list');
 
-      let impToken: string | null = null;
-      try { impToken = await authorizeWithCache(hem, password, 'keymgmt:imp'); } catch { /* optional */ }
-
-      let genToken: string | null = null;
-      try { genToken = await authorizeWithCache(hem, password, 'keymgmt:gen'); } catch { /* optional */ }
-
       _singleton.password = password;
       if (sessionStorage.getItem(HSM_PW_KEY)) {
         sessionStorage.setItem(HSM_PW_KEY, password);
@@ -164,7 +154,7 @@ export function HsmProvider({ children }: { children: React.ReactNode }) {
 
       const next: HsmState = {
         ..._singleton.state,
-        hem, listToken, impToken, genToken,
+        hem, listToken,
         connected: true, unlocked: true, error: null,
       };
       _singleton.state = next;
@@ -174,7 +164,7 @@ export function HsmProvider({ children }: { children: React.ReactNode }) {
       const msg = e instanceof Error ? e.message : String(e);
       const next: HsmState = {
         ..._singleton.state,
-        connected: false, unlocked: false, impToken: null, genToken: null, error: msg,
+        connected: false, unlocked: false, error: msg,
       };
       _singleton.state = next;
       setState(next);
@@ -188,7 +178,7 @@ export function HsmProvider({ children }: { children: React.ReactNode }) {
     _singleton.tokenCache.clear();
     const next: HsmState = {
       ..._singleton.state,
-      hem: null, listToken: null, impToken: null, genToken: null,
+      hem: null, listToken: null,
       connected: false, unlocked: false, error: null,
     };
     _singleton.state = next;

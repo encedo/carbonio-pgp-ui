@@ -129,7 +129,7 @@ function Spinner() {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export function KeygenModal({ open, onClose, onGenerated, onPublished, disabledEmails = [] }: Props) {
-  const { hem, genToken, authorize } = useHsm();
+  const { hem, authorize } = useHsm();
 
   const account  = useUserAccount();
   const settings = useUserSettings();
@@ -161,12 +161,14 @@ export function KeygenModal({ open, onClose, onGenerated, onPublished, disabledE
   // ── Keygen ────────────────────────────────────────────────────────────────
 
   async function handleGenerate() {
-    if (!hem || !genToken) { setError('HSM not ready'); return; }
+    if (!hem) { setError('HSM not ready'); return; }
     setPhase('generating');
     setError(null);
     try {
       const iat = Math.floor(Date.now() / 1000);
       const exp = expiryYears > 0 ? iat + expiryYears * 365 * 24 * 3600 : undefined;
+
+      const genToken = await authorize('keymgmt:gen');
 
       // Generate keys on HSM
       const { kid: kidSign } = await hem.createKeyPair(
@@ -332,7 +334,7 @@ export function KeygenModal({ open, onClose, onGenerated, onPublished, disabledE
                 label="Generate on HSM"
                 color="primary"
                 onClick={handleGenerate}
-                disabled={!email || !genToken}
+                disabled={!email}
               />
             </>
           )}
