@@ -4,6 +4,12 @@ import { useHsm, encodeDescr } from '../store/HsmContext';
 import { wkdLookupParse, WkdKeyInfo } from '../lib/wkd-fetch';
 import { ModalDialog } from './ModalDialog';
 
+const WARN_BOX: React.CSSProperties = {
+  background: '#fffbeb', border: '1px solid #f6e05e',
+  borderRadius: 6, padding: '10px 14px',
+  fontSize: 12, color: '#744210', lineHeight: 1.5, marginTop: 12,
+};
+
 // DESCR schema (mirrors keychain.js — ETSPGP:peer,<email>,sign/ecdh)
 const peerSignDescr = (email: string) => encodeDescr(`ETSPGP:peer,${email},sign`);
 const peerEcdhDescr = (email: string) => encodeDescr(`ETSPGP:peer,${email},ecdh`);
@@ -13,6 +19,7 @@ interface Props {
   email: string;
   onClose: () => void;
   onImported: () => void;
+  existingKey?: { kidSign?: string; kidEcdh?: string };
 }
 
 type Phase = 'fetching' | 'found' | 'importing' | 'done' | 'error';
@@ -43,7 +50,7 @@ function Spinner() {
   );
 }
 
-export function WkdImportModal({ open, email, onClose, onImported }: Props) {
+export function WkdImportModal({ open, email, onClose, onImported, existingKey }: Props) {
   const { hem, authorize } = useHsm();
   const [phase,   setPhase]  = useState<Phase>('fetching');
   const [keyInfo, setKeyInfo] = useState<WkdKeyInfo | null>(null);
@@ -66,10 +73,16 @@ export function WkdImportModal({ open, email, onClose, onImported }: Props) {
     if (!keyInfo || !hem) return;
     setPhase('importing');
     try {
+      // If replacing an existing key: delete old entries from HSM first
+      if (existingKey?.kidSign || existingKey?.kidEcdh) {
+        const delToken = await authorize('keymgmt:del');
+        if (existingKey.kidSign) await hem.deleteKey(delToken, existingKey.kidSign);
+        if (existingKey.kidEcdh) await hem.deleteKey(delToken, existingKey.kidEcdh);
+      }
       const impToken = await authorize('keymgmt:imp');
       const signLabel = email.slice(0, 32);
       const ecdhLabel = `${email.slice(0, 28)}/E`;
-      await hem.importPublicKey(impToken, signLabel, 'ED25519',   keyInfo.signRaw32, peerSignDescr(email));
+      await hem.importPublicKey(impToken, signLabel, 'ED25519',    keyInfo.signRaw32, peerSignDescr(email));
       await hem.importPublicKey(impToken, ecdhLabel, 'CURVE25519', keyInfo.ecdhRaw32, peerEcdhDescr(email));
       setPhase('done');
       onImported();
@@ -110,6 +123,11 @@ export function WkdImportModal({ open, email, onClose, onImported }: Props) {
                   <span style={MONO}>{keyInfo.ecdhHex}</span>
                 </div>
               </div>
+              {existingKey && (
+                <div style={WARN_BOX}>
+                  ⚠ A key for this address already exists in HSM and will be replaced.
+                </div>
+              )}
             </>
           )}
 

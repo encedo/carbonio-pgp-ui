@@ -24,6 +24,7 @@ interface PeerKeyPair {
   kidSign: string;
   kidEcdh: string;
   fingerprint?: string;
+  wkdStatus?: 'ok' | 'obsolete' | 'no-wkd';
 }
 
 // ── Styles ────────────────────────────────────────────────────────────────────
@@ -252,15 +253,28 @@ function PgpSettingsInner() {
       const peers = [...peerMap.values()].filter((k): k is PeerKeyPair => !!(k.kidSign || k.kidEcdh)) as PeerKeyPair[];
       setPeerKeys(peers);
 
-      // Fetch fingerprints for peer keys from WKD (best effort, non-blocking)
+      // Fetch WKD info for peer keys: fingerprint + compare with HSM key to detect obsolete
       for (const peer of peers) {
-        wkdLookupParse(peer.email)
-          .then(info => {
-            setPeerKeys(prev => prev.map(p =>
-              p.email === peer.email ? { ...p, fingerprint: info.fingerprint } : p
+        (async () => {
+          try {
+            const info = await wkdLookupParse(peer.email);
+            const useToken = await authorize(`keymgmt:use:${peer.kidSign}`);
+            const hsmResult = await hem!.getPubKey(useToken, peer.kidSign);
+            const hsmB64 = typeof hsmResult === 'string' ? hsmResult : (hsmResult as unknown as { pubkey: string }).pubkey;
+            const hsmBytes = Uint8Array.from(atob(hsmB64), c => c.charCodeAt(0));
+            const match = hsmBytes.length === info.signRaw32.length &&
+              hsmBytes.every((b, i) => b === info.signRaw32[i]);
+            setPeerKeys(prev => prev.map(p => p.email === peer.email
+              ? { ...p, fingerprint: info.fingerprint, wkdStatus: match ? 'ok' : 'obsolete' }
+              : p
             ));
-          })
-          .catch(() => { /* WKD not available — fingerprint stays undefined */ });
+          } catch {
+            setPeerKeys(prev => prev.map(p => p.email === peer.email
+              ? { ...p, wkdStatus: 'no-wkd' }
+              : p
+            ));
+          }
+        })();
       }
 
       // Check WKD status for each self key — compare WKD key bytes with HSM key bytes
@@ -547,62 +561,61 @@ function PgpSettingsInner() {
                       {selfKeys.map(kp => {
                         const wkdStatus = wkdStatuses.get(kp.email) ?? 'local';
                         const isPublishing = publishingEmail === kp.email;
+                        const nb = kp.fingerprint ? { borderBottom: 'none' } : {};
+                        const tdB = { ...S.td, ...nb };
                         return (
                           <React.Fragment key={`${kp.email}:${kp.iat}`}>
-                          <tr className="pgp-tr" style={{ borderBottom: kp.fingerprint ? 'none' : undefined }}>
-                            <td style={S.td}>{kp.email}</td>
-                            <td style={{ ...S.td, ...S.mono }}>{shortKid(kp.kidSign)}</td>
-                            <td style={{ ...S.td, ...S.mono }}>{shortKid(kp.kidEcdh)}</td>
-                            <td style={{ ...S.td, ...S.muted }}>{formatDate(kp.iat)}</td>
-                            <td style={{ ...S.td, ...S.muted }}>{kp.exp ? formatDate(kp.exp) : '—'}</td>
-                            <td style={S.td}>
-                              <span style={S.pill(wkdStatus)}>
-                                {wkdStatus === 'checking' ? 'Checking…'
-                                  : wkdStatus === 'published' ? 'Published'
-                                  : wkdStatus === 'mismatch' ? '⚠ Mismatch'
-                                  : 'Local'}
-                              </span>
-                            </td>
-                            <td style={S.tdActions}>
-                              <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                                {wkdStatus === 'checking' ? (
-                                  <Button label="↑ Publish" color="secondary" size="small" disabled onClick={() => {}} />
-                                ) : wkdStatus === 'local' ? (
-                                  <Button
-                                    label={isPublishing ? 'Publishing…' : '↑ Publish'}
-                                    color="secondary"
-                                    size="small"
-                                    disabled={isPublishing}
-                                    onClick={() => handlePublish(kp)}
-                                  />
-                                ) : wkdStatus === 'mismatch' ? (
-                                  <Button
-                                    label={isPublishing ? 'Publishing…' : '↑ Re-publish'}
-                                    color="warning"
-                                    size="small"
-                                    disabled={isPublishing}
-                                    onClick={() => handlePublish(kp)}
-                                  />
-                                ) : (
-                                  <Button
-                                    label="↻ Rotate"
-                                    color="secondary"
-                                    size="small"
-                                    disabled={isPublishing || !genToken}
-                                    onClick={() => { setRotateError(null); setRotateTarget(kp); }}
-                                  />
-                                )}
-                                <Button label="✕ Revoke"  color="error"     size="small" onClick={() => { setRevokeError(null); setRevokeTarget(kp); }} />
-                              </div>
-                            </td>
-                          </tr>
-                          {kp.fingerprint && (
-                            <tr>
-                              <td colSpan={7} style={{ ...S.td, paddingTop: 0, paddingBottom: 8, fontFamily: 'monospace', fontSize: 11, color: '#a0aec0' }}>
-                                {kp.fingerprint}
+                            <tr className="pgp-tr">
+                              <td style={tdB}>{kp.email}</td>
+                              <td style={{ ...tdB, ...S.mono }}>{shortKid(kp.kidSign)}</td>
+                              <td style={{ ...tdB, ...S.mono }}>{shortKid(kp.kidEcdh)}</td>
+                              <td style={{ ...tdB, ...S.muted }}>{formatDate(kp.iat)}</td>
+                              <td style={{ ...tdB, ...S.muted }}>{kp.exp ? formatDate(kp.exp) : '—'}</td>
+                              <td style={tdB}>
+                                <span style={S.pill(wkdStatus)}>
+                                  {wkdStatus === 'checking' ? 'Checking…'
+                                    : wkdStatus === 'published' ? 'Published'
+                                    : wkdStatus === 'mismatch' ? '⚠ Mismatch'
+                                    : 'Local'}
+                                </span>
+                              </td>
+                              <td style={{ ...S.tdActions, ...nb }}>
+                                <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                                  {wkdStatus === 'checking' ? (
+                                    <Button label="↑ Publish" color="secondary" size="small" disabled onClick={() => {}} />
+                                  ) : wkdStatus === 'local' ? (
+                                    <Button
+                                      label={isPublishing ? 'Publishing…' : '↑ Publish'}
+                                      color="secondary" size="small"
+                                      disabled={isPublishing}
+                                      onClick={() => handlePublish(kp)}
+                                    />
+                                  ) : wkdStatus === 'mismatch' ? (
+                                    <Button
+                                      label={isPublishing ? 'Publishing…' : '↑ Re-publish'}
+                                      color="warning" size="small"
+                                      disabled={isPublishing}
+                                      onClick={() => handlePublish(kp)}
+                                    />
+                                  ) : (
+                                    <Button
+                                      label="↻ Rotate"
+                                      color="secondary" size="small"
+                                      disabled={isPublishing || !genToken}
+                                      onClick={() => { setRotateError(null); setRotateTarget(kp); }}
+                                    />
+                                  )}
+                                  <Button label="✕ Revoke" color="error" size="small" onClick={() => { setRevokeError(null); setRevokeTarget(kp); }} />
+                                </div>
                               </td>
                             </tr>
-                          )}
+                            {kp.fingerprint && (
+                              <tr>
+                                <td colSpan={7} style={{ ...S.td, paddingTop: 0, paddingBottom: 8, fontFamily: 'monospace', fontSize: 11, color: '#a0aec0' }}>
+                                  {kp.fingerprint}
+                                </td>
+                              </tr>
+                            )}
                           </React.Fragment>
                         );
                       })}
@@ -652,9 +665,10 @@ function PgpSettingsInner() {
                   <thead>
                     <tr>
                       <th style={S.th}>Email</th>
-                      <th style={S.th}>Fingerprint</th>
+                      <th style={S.th}>Fingerprint (WKD)</th>
                       <th style={S.th}>Key ID (sign)</th>
                       <th style={S.th}>Key ID (ecdh)</th>
+                      <th style={S.th}>Status</th>
                       <th style={S.th}></th>
                     </tr>
                   </thead>
@@ -665,6 +679,12 @@ function PgpSettingsInner() {
                         <td style={{ ...S.td, ...S.mono, fontSize: 11 }}>{kp.fingerprint ?? '…'}</td>
                         <td style={{ ...S.td, ...S.mono }}>{kp.kidSign ? shortKid(kp.kidSign) : '—'}</td>
                         <td style={{ ...S.td, ...S.mono }}>{kp.kidEcdh ? shortKid(kp.kidEcdh) : '—'}</td>
+                        <td style={S.td}>
+                          {kp.wkdStatus === 'obsolete' && <span style={S.pill('mismatch')}>⚠ Obsolete</span>}
+                          {kp.wkdStatus === 'ok'       && <span style={S.pill('published')}>✓ Current</span>}
+                          {kp.wkdStatus === 'no-wkd'   && <span style={S.pill('local')}>No WKD</span>}
+                          {!kp.wkdStatus               && <span style={S.pill('checking')}>Checking…</span>}
+                        </td>
                         <td style={S.tdActions}>
                           <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
                             <Button
@@ -705,6 +725,7 @@ function PgpSettingsInner() {
           email={importEmail}
           onClose={() => setImportModalOpen(false)}
           onImported={() => { setImportModalOpen(false); setPeerEmailInput(''); loadKeys(); }}
+          existingKey={peerKeys.find(p => p.email === importEmail)}
         />
         <KeygenModal
           open={keygenModalOpen}

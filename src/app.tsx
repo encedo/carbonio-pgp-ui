@@ -356,41 +356,28 @@ type PgpDecryptResult = {
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pkeskAny = pkesk as any;
-      const pkAlgo: number = pkeskAny.publicKeyAlgorithm;
       const encKeys = Object.keys(pkeskAny.encrypted ?? {});
-      console.error('[pgp-decrypt] pkesk algo:', pkAlgo, 'encrypted keys:', encKeys,
-        'sessionKeyAlgorithm:', pkeskAny.sessionKeyAlgorithm,
-        'V?.length:', pkeskAny.encrypted?.V?.length,
-        'ephPub?.length:', pkeskAny.encrypted?.ephemeralPublicKey?.length,
-        'C?.data?.length:', pkeskAny.encrypted?.C?.data?.length,
-        'C?.wrappedKey?.length:', pkeskAny.encrypted?.C?.wrappedKey?.length,
-      );
       // Legacy ECDH (algo 18): { V: MPI with 0x40 prefix, C: ECDHSymmetricKey with .data }
       // New X25519 (algo 25):  { ephemeralPublicKey: 32 bytes, C: ECDHXSymmetricKey with .wrappedKey }
       let ephemeral: Uint8Array;
       let wrapped: Uint8Array;
       let algoId: number;
       if (encKeys.includes('V')) {
-        // Legacy ECDH format
         ephemeral = pkeskAny.encrypted.V;
         wrapped = pkeskAny.encrypted.C.data;
         algoId = pkeskAny.sessionKeyAlgorithm ?? openpgp.enums.symmetric.aes256;
       } else if (encKeys.includes('ephemeralPublicKey')) {
-        // New X25519 format — ephemeralPublicKey is already 32 bytes (no 0x40 prefix)
         ephemeral = pkeskAny.encrypted.ephemeralPublicKey;
         wrapped = pkeskAny.encrypted.C.wrappedKey;
         algoId = pkeskAny.sessionKeyAlgorithm ?? openpgp.enums.symmetric.aes256;
       } else {
         throw new Error(`Unknown PKESK encrypted structure: keys=${encKeys.join(',')}`);
       }
-      console.error('[pgp-decrypt] ephemeral.length:', ephemeral?.length, 'wrapped.length:', wrapped?.length, 'algoId:', algoId);
       const raw = await localDecryptPkesk(ephemeral, wrapped, ecdhFingerprint, algoId, hem, ecdhToken, selfEcdhKey.kid);
-      console.error('[pgp-decrypt] sessionKey obtained, algoName:', raw.algorithm, 'dataLen:', raw.data?.length);
       sessionKey = raw;
       break;
     } catch (e) {
       lastErr = e;
-      console.error('[pgp-decrypt] PKESK failed:', e instanceof Error ? e.message : String(e), e);
     }
   }
   if (!sessionKey) throw new Error(`Decryption failed: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`);

@@ -136,12 +136,28 @@ function shortHex(bytes: Uint8Array): string {
 
 // ── Result ────────────────────────────────────────────────────────────────────
 
+/** Compute OpenPGP v4 fingerprint: SHA-1( 0x99 || uint16be(bodyLen) || body ) */
+async function fingerprintV4(body: Uint8Array): Promise<string> {
+  const len = body.length;
+  const data = new Uint8Array(3 + len);
+  data[0] = 0x99;
+  data[1] = (len >> 8) & 0xff;
+  data[2] = len & 0xff;
+  data.set(body, 3);
+  const hash = await sha1(data);
+  // Display as uppercase hex grouped every 4 chars with space
+  const hex = toHex(hash);
+  return hex.replace(/(.{4})(?=.)/g, '$1 ');
+}
+
 export interface WkdKeyInfo {
   email: string;
   signRaw32: Uint8Array;
   ecdhRaw32: Uint8Array;
-  signHex: string;   // first 16 chars grouped for display
+  signHex: string;        // first 16 chars grouped for display
   ecdhHex: string;
+  fingerprint: string;    // primary key fingerprint (40-char grouped hex)
+  ecdhFingerprint: string; // ECDH subkey fingerprint (40-char grouped hex)
 }
 
 export async function wkdLookupParse(email: string): Promise<WkdKeyInfo> {
@@ -151,22 +167,31 @@ export async function wkdLookupParse(email: string): Promise<WkdKeyInfo> {
   const packets = parsePackets(keyBytes);
   let signRaw32: Uint8Array | null = null;
   let ecdhRaw32:  Uint8Array | null = null;
+  let primaryBody: Uint8Array | null = null;
+  let ecdhBody:    Uint8Array | null = null;
 
   for (const pkt of packets) {
     if (pkt.tag === TAG_PUBLIC_KEY && pkt.body[5] === ALGO_EDDSA) {
       if (!oidMatches(pkt.body, OID_ED25519))
         throw new Error(`Unsupported EdDSA curve in WKD key for ${email} (only Ed25519 is supported)`);
       signRaw32 = extractRaw32(pkt.body);
+      primaryBody = pkt.body;
     }
     if (pkt.tag === TAG_PUBLIC_SUBKEY && pkt.body[5] === ALGO_ECDH) {
       if (!oidMatches(pkt.body, OID_X25519))
         throw new Error(`Unsupported ECDH curve in WKD key for ${email} (only X25519 / Curve25519 is supported)`);
       ecdhRaw32 = extractRaw32(pkt.body);
+      ecdhBody  = pkt.body;
     }
   }
 
-  if (!signRaw32) throw new Error(`Ed25519 signing key not found in WKD response for ${email}`);
-  if (!ecdhRaw32) throw new Error(`X25519 ECDH key not found in WKD response for ${email}`);
+  if (!signRaw32 || !primaryBody) throw new Error(`Ed25519 signing key not found in WKD response for ${email}`);
+  if (!ecdhRaw32 || !ecdhBody)   throw new Error(`X25519 ECDH key not found in WKD response for ${email}`);
+
+  const [fingerprint, ecdhFingerprint] = await Promise.all([
+    fingerprintV4(primaryBody),
+    fingerprintV4(ecdhBody),
+  ]);
 
   return {
     email,
@@ -174,5 +199,7 @@ export async function wkdLookupParse(email: string): Promise<WkdKeyInfo> {
     ecdhRaw32,
     signHex: shortHex(signRaw32),
     ecdhHex: shortHex(ecdhRaw32),
+    fingerprint,
+    ecdhFingerprint,
   };
 }
