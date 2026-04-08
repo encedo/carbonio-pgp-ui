@@ -55,32 +55,56 @@ jobs:
         working-directory: carbonio-pgp-ui
         run: npm run build
 
-      - name: Install makedeb
-        run: |
-          wget -qO - 'https://proget.makedeb.org/debian-feeds/makedeb.pub' \
-            | gpg --dearmor \
-            | sudo tee /usr/share/keyrings/makedeb-archive-keyring.gpg > /dev/null
-          echo 'deb [signed-by=/usr/share/keyrings/makedeb-archive-keyring.gpg arch=all] https://proget.makedeb.org/ makedeb main' \
-            | sudo tee /etc/apt/sources.list.d/makedeb.list
-          sudo apt-get update -q
-          sudo apt-get install -y makedeb
-
       - name: Build .deb
         id: deb
-        working-directory: carbonio-pgp-ui/dist/package
         run: |
-          PKG_VERSION=$(node -p "require('../../package.json').version")
+          PKG_NAME="carbonio-pgp-ui"
+          PKG_VERSION=$(node -p "require('./carbonio-pgp-ui/package.json').version")
           PKG_REL="1+HEM${{ github.run_number }}"
+          COMMIT="${{ github.sha }}"
+          INSTALL_DIR="/opt/zextras/web/iris/${PKG_NAME}/${COMMIT}"
 
-          sed -i "s/^pkgrel=.*/pkgrel=\"${PKG_REL}\"/" PKGBUILD
+          DEB_ROOT="$(pwd)/deb-root"
+          mkdir -p "${DEB_ROOT}/DEBIAN"
+          mkdir -p "${DEB_ROOT}${INSTALL_DIR}"
 
-          # Source tarball expected by PKGBUILD
-          tar -czf carbonio-pgp-ui-dist.tar.gz -C ../.. dist/
+          # Copy built assets
+          cp -a carbonio-pgp-ui/dist/* "${DEB_ROOT}${INSTALL_DIR}/"
 
-          makedeb -s --no-confirm
+          # DEBIAN/control
+          cat > "${DEB_ROOT}/DEBIAN/control" <<EOF
+          Package: ${PKG_NAME}
+          Version: ${PKG_VERSION}-${PKG_REL}
+          Architecture: amd64
+          Maintainer: Encedo <packages@encedo.com>
+          Section: admin
+          Priority: optional
+          Depends: carbonio-nginx, carbonio-webui-i18n, jq
+          Description: OpenPGP encryption/decryption for Carbonio via Encedo HEM
+          EOF
 
-          DEB=$(ls *.deb | head -1)
-          echo "deb_file=carbonio-pgp-ui/dist/package/${DEB}" >> $GITHUB_OUTPUT
+          # DEBIAN/postinst (same logic as PKGBUILD postinst)
+          cat > "${DEB_ROOT}/DEBIAN/postinst" <<'EOF'
+          #!/bin/bash
+          set -e
+          PKG_NAME="carbonio-pgp-ui"
+          COMMIT_DIR=$(ls /opt/zextras/web/iris/${PKG_NAME}/ | grep -v current | head -1)
+          mkdir -p "/opt/zextras/web/iris/${PKG_NAME}/current"
+          cd "/opt/zextras/web/iris/${PKG_NAME}/${COMMIT_DIR}"
+          find . -name "*.html" -exec cp --parents "{}" /opt/zextras/web/iris/${PKG_NAME}/current/ \;
+          find /opt/zextras/web/iris/ \
+            -maxdepth 3 -mindepth 3 -type f -name component.json \
+            -printf '%T@ %p\n' \
+            | sort -rn \
+            | awk '{n=split($2,path,"/"); c=path[6]; if(!seen[c]++) print $2}' \
+            | xargs jq -s '{"components":.}' >/opt/zextras/web/iris/components.json
+          EOF
+          chmod 755 "${DEB_ROOT}/DEBIAN/postinst"
+
+          DEB_FILE="${PKG_NAME}_${PKG_VERSION}-${PKG_REL}_amd64.deb"
+          dpkg-deb --build "${DEB_ROOT}" "${DEB_FILE}"
+
+          echo "deb_file=${DEB_FILE}" >> $GITHUB_OUTPUT
           echo "version=${PKG_VERSION}-${PKG_REL}" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
