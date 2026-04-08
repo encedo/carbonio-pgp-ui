@@ -1,0 +1,62 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout carbonio-pgp-ui
+        uses: actions/checkout@v4
+        with:
+          path: carbonio-pgp-ui
+
+      - name: Checkout hem-sdk-js
+        uses: actions/checkout@v4
+        with:
+          repository: encedo/hem-sdk-js
+          path: hem-sdk-js
+
+      - name: Checkout encedo-pgp-js
+        uses: actions/checkout@v4
+        with:
+          repository: encedo/encedo-pgp-js
+          path: encedo-pgp-js
+
+      - name: Checkout carbonio-mails-ui
+        uses: actions/checkout@v4
+        with:
+          repository: encedo/carbonio-mails-ui
+          path: carbonio-mails-ui
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: carbonio-pgp-ui/package-lock.json
+
+      - name: Build encedo-pgp-js
+        working-directory: encedo-pgp-js
+        run: npm ci && npm run build
+
+      - name: Install dependencies
+        working-directory: carbonio-pgp-ui
+        run: npm ci
+
+      - name: Build
+        working-directory: carbonio-pgp-ui
+        run: bash build-zip.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: carbonio-pgp-ui-${{ github.sha }}
+          path: carbonio-pgp-ui/carbonio-pgp-ui.zip
+          retention-days: 30

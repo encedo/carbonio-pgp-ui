@@ -105,13 +105,13 @@ in `app.tsx` — NOT through the rollup bundle.
 ## Token management
 
 - Tokens cached in `_singleton.tokenCache` with 8h TTL (30s safety margin)
-- `authorizeScope(scope)` — returns cached token or fetches fresh one
-- Scopes used:
-  - `keymgmt:list` — search/list keys (obtained at connect, cached)
-  - `keymgmt:imp`  — importPublicKey (obtained at connect, cached)
-  - `keymgmt:gen`  — createKeyPair (obtained at connect, cached)
-  - `keymgmt:del`  — deleteKey (obtained lazily via authorize(), cached)
-  - `keymgmt:use:<kid>` — getPubKey, sign, ecdh (per key, obtained lazily, cached)
+- `authorize(scope)` — returns cached token or fetches fresh one
+- Scopes used (all acquired lazily except list):
+  - `keymgmt:list` — search/list keys (obtained at connect)
+  - `keymgmt:imp`  — importPublicKey (lazy)
+  - `keymgmt:gen`  — createKeyPair (lazy)
+  - `keymgmt:del`  — deleteKey (lazy)
+  - `keymgmt:use:<kid>` — getPubKey, sign, ecdh (per key, lazy)
 
 ## DESCR schema (mirrors encedo-pgp-js/keychain.js)
 

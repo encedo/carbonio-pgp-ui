@@ -69,13 +69,12 @@ State survives React unmounts (route changes) via module-level `_singleton`:
 ```ts
 // HsmContext.tsx
 export const _singleton = {
-  password:   string,          // in-memory, cleared on disconnect
-  tokenCache: Map<scope, { token, expiresAt }>,
+  password:            string,          // in-memory, cleared on disconnect
+  tokenCache:          Map<scope, { token, expiresAt }>,
+  ecdhFingerprintCache: Map<email, Uint8Array>, // WKD ECDH fingerprint cache
   state: {
     hem:        HEM | null,    // HEM SDK instance
-    listToken:  string | null, // keymgmt:list token
-    impToken:   string | null, // keymgmt:imp token
-    genToken:   string | null, // keymgmt:gen token
+    listToken:  string | null, // keymgmt:list token (obtained at connect)
     connected:  boolean,
     unlocked:   boolean,
     url:        string,
@@ -83,8 +82,9 @@ export const _singleton = {
 };
 ```
 
-All tokens have 8h TTL with 30s safety margin. `authorizeScope(scope)` returns cached
-or fetches fresh.
+All tokens have 8h TTL with 30s safety margin. `authorize(scope)` returns cached or fetches fresh.
+Only `keymgmt:list` is acquired at connect time. All other scopes (`gen`, `imp`, `del`, `use:<kid>`)
+are acquired lazily on first use.
 
 ### Window globals (bridge to carbonio-mails-ui)
 
@@ -366,12 +366,15 @@ Authentication: JWT tokens obtained via `hem.authorizePassword(pw, scope)`.
 ### Token caching strategy
 
 Tokens are cached in `_singleton.tokenCache` with 8h TTL. After successful unlock:
-- `keymgmt:list`, `keymgmt:imp`, `keymgmt:gen` obtained immediately and cached
-- `keymgmt:use:<kid>` obtained lazily on first use, cached per kid
+- `keymgmt:list` obtained immediately at connect, cached
+- All other scopes (`gen`, `imp`, `del`, `use:<kid>`) acquired lazily on first use
 
 On each send or decrypt:
-- If token for that kid is in cache and not expired → reuse (zero `/api/auth/token` calls)
+- If token for that scope is in cache and not expired → reuse (zero `/api/auth/token` calls)
 - If expired or missing → one `/api/auth/token` call per scope needed
+
+ECDH subkey fingerprints (needed for RFC 6637 KDF) are cached per email in
+`_singleton.ecdhFingerprintCache` — WKD is fetched once per email per session.
 
 ### Typical HSM call sequence for Decrypt
 

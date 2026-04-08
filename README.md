@@ -1,10 +1,10 @@
 # carbonio-pgp-ui
 
-Carbonio UI module integrating PGP encryption, decryption and signing via [Encedo HEM](https://encedo.com) hardware security module.
+Carbonio UI module integrating OpenPGP encryption, decryption and signing via [Encedo HEM](https://encedo.com) hardware security module.
 
 **Private keys never leave the HSM.** All Ed25519 signing and X25519 ECDH operations are performed on the device.
 
-Part of **Encedo Mail**. See [ARCH.md](../ARCH.md) for full system architecture.
+Part of **Encedo Mail**. See [ARCH.md](ARCH.md) for full system architecture.
 
 ---
 
@@ -51,28 +51,13 @@ ssh root@mailserver 'sudo bash /tmp/install-pgp-ui.sh --reregister'
 
 ## Features
 
-### Phase 1 — Settings panel (`/pgp`) ✅
-
 | Section | Actions |
 |---------|---------|
 | **HSM Connection** | Enter URL, connect, unlock with password, lock, refresh |
-| **My Keys** | List own key pairs, WKD publish status, Publish / Rotate / Revoke |
-| **Peer Keys** | Import peer public keys from WKD, view fingerprints, Remove |
-
-### Phase 2 — Mail Compose ✅
-
-- Sign-only button (inline PGP cleartext signature)
-- Sign + Encrypt button (RFC 3156 multipart/encrypted with `encrypted.asc` attachment)
-- WKD check per recipient (lock icon when key available)
-- Auto-unlock modal when HSM needed for send
-
-### Phase 3 — Mail Read ✅
-
-- Auto-detects PGP encrypted / signed messages
-- Decrypt button → triggers HSM ECDH + AES-KW → shows decrypted HTML
-- Auto-verifies inline signed messages
-- Signature validity badge with signer email
-- Auto-unlock modal when HSM locked and user clicks Decrypt
+| **My Keys** | List own key pairs, WKD publish/fingerprint status, Publish / Rotate / Revoke |
+| **Peer Keys** | Import peer public keys from WKD, WKD obsolete check, Remove |
+| **Mail Compose** | Sign-only and Sign+Encrypt buttons (via carbonio-mails-ui bridge) |
+| **Mail Read** | Decrypt button, signature verification badge, auto-unlock modal |
 
 ---
 
@@ -101,10 +86,10 @@ ssh root@mailserver 'sudo bash /tmp/install-pgp-ui.sh --reregister'
 
 ## HSM Token Scopes
 
-| Scope | Used for |
-|-------|---------|
-| `keymgmt:list` | Search / list keys in HSM |
-| `keymgmt:gen` | Generate new key pair |
-| `keymgmt:imp` | Import peer public key |
-| `keymgmt:del` | Delete key |
-| `keymgmt:use:<kid>` | Sign, ECDH, getPubKey (per key, per operation) |
+| Scope | Used for | Acquired |
+|-------|---------|---------|
+| `keymgmt:list` | Search / list keys in HSM | At connect |
+| `keymgmt:gen` | Generate new key pair | Lazily on first use |
+| `keymgmt:imp` | Import peer public key | Lazily on first use |
+| `keymgmt:del` | Delete key | Lazily on first use |
+| `keymgmt:use:<kid>` | Sign, ECDH, getPubKey (per key) | Lazily per key |
