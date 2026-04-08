@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Button, Icon, Input, Spinner, Text } from '@zextras/carbonio-design-system';
 import { decodeDescr, useHsm, DESCR_PREFIX, DESCR, encodeDescr } from '../store/HsmContext';
 import { patchWebCrypto } from '../lib/webcrypto-patch';
-import { wkdFetch } from '../lib/wkd-fetch';
+import { wkdLookupParse } from '../lib/wkd-fetch';
 import { HsmUrlModal } from '../components/HsmUrlModal';
 import { HsmPasswordModal } from '../components/HsmPasswordModal';
 import { WkdImportModal } from '../components/WkdImportModal';
@@ -22,6 +22,7 @@ interface PeerKeyPair {
   email: string;
   kidSign: string;
   kidEcdh: string;
+  fingerprint?: string;
 }
 
 // ── Styles ────────────────────────────────────────────────────────────────────
@@ -115,14 +116,14 @@ const S = {
     background: color ?? (ok ? '#276749' : '#9b2c2c'),
   }),
 
-  pill: (status: 'published' | 'local' | 'checking'): React.CSSProperties => ({
+  pill: (status: 'published' | 'local' | 'checking' | 'mismatch'): React.CSSProperties => ({
     display: 'inline-block',
     padding: '2px 8px',
     borderRadius: 12,
     fontSize: 11,
     fontWeight: 500,
-    background: status === 'published' ? '#c6f6d5' : status === 'checking' ? '#fef9c3' : '#e2e8f0',
-    color:      status === 'published' ? '#276749' : status === 'checking' ? '#92400e' : '#718096',
+    background: status === 'published' ? '#c6f6d5' : status === 'checking' ? '#fef9c3' : status === 'mismatch' ? '#fed7d7' : '#e2e8f0',
+    color:      status === 'published' ? '#276749' : status === 'checking' ? '#92400e' : status === 'mismatch' ? '#9b2c2c' : '#718096',
   }),
 
   emptyState: {
@@ -178,13 +179,28 @@ function PgpSettingsInner() {
 
   const [urlModalOpen, setUrlModalOpen] = useState(false);
   const [pwModalOpen,  setPwModalOpen]  = useState(false);
+  const [unlockCallback, setUnlockCallback] = useState<(() => void) | null>(null);
+
+  // Register global hook so mails-ui can trigger unlock modal
+  useEffect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).__encedoPgpRequestUnlock = (onUnlocked: () => void) => {
+      setUnlockCallback(() => onUnlocked);
+      if (!url) setUrlModalOpen(true);
+      else setPwModalOpen(true);
+    };
+    return () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      delete (window as any).__encedoPgpRequestUnlock;
+    };
+  }, [url]);
 
   const [selfKeys,    setSelfKeys]    = useState<KeyPair[]>([]);
   const [peerKeys,    setPeerKeys]    = useState<PeerKeyPair[]>([]);
   const [loadingKeys, setLoadingKeys] = useState(false);
   const [keysError,   setKeysError]   = useState<string | null>(null);
 
-  const [wkdStatuses,    setWkdStatuses]    = useState<Map<string, 'checking' | 'published' | 'local'>>(new Map());
+  const [wkdStatuses,    setWkdStatuses]    = useState<Map<string, 'checking' | 'published' | 'local' | 'mismatch'>>(new Map());
   const [publishingEmail, setPublishingEmail] = useState<string | null>(null);
   const [publishError,    setPublishError]    = useState<string | null>(null);
 
@@ -232,31 +248,50 @@ function PgpSettingsInner() {
 
       const keys = [...selfMap.values()].filter((k): k is KeyPair => !!(k.kidSign && k.kidEcdh));
       setSelfKeys(keys);
-      setPeerKeys(
-        [...peerMap.values()].filter((k): k is PeerKeyPair => !!(k.kidSign || k.kidEcdh)) as PeerKeyPair[]
-      );
+      const peers = [...peerMap.values()].filter((k): k is PeerKeyPair => !!(k.kidSign || k.kidEcdh)) as PeerKeyPair[];
+      setPeerKeys(peers);
 
-      // Check WKD status for each self key (by email)
-      const initStatuses = new Map<string, 'checking' | 'published' | 'local'>();
+      // Fetch fingerprints for peer keys from WKD (best effort, non-blocking)
+      for (const peer of peers) {
+        wkdLookupParse(peer.email)
+          .then(info => {
+            setPeerKeys(prev => prev.map(p =>
+              p.email === peer.email ? { ...p, fingerprint: info.fingerprint } : p
+            ));
+          })
+          .catch(() => { /* WKD not available — fingerprint stays undefined */ });
+      }
+
+      // Check WKD status for each self key — compare WKD key bytes with HSM key bytes
+      const initStatuses = new Map<string, 'checking' | 'published' | 'local' | 'mismatch'>();
       for (const k of keys) initStatuses.set(k.email, 'checking');
       setWkdStatuses(initStatuses);
 
       for (const k of keys) {
-        wkdFetch(k.email)
-          .then(result => {
+        (async () => {
+          try {
+            const info = await wkdLookupParse(k.email);
+            // Compare WKD public key with HSM public key to detect stale/wrong entries
+            const useToken = await authorize(`keymgmt:use:${k.kidSign}`);
+            const hsmResult = await hem!.getPubKey(useToken, k.kidSign);
+            // getPubKey returns { pubkey: string (base64), ... } despite type declaration
+            const hsmB64 = typeof hsmResult === 'string' ? hsmResult : (hsmResult as unknown as { pubkey: string }).pubkey;
+            const hsmBytes = Uint8Array.from(atob(hsmB64), c => c.charCodeAt(0));
+            const match = hsmBytes.length === info.signRaw32.length &&
+              hsmBytes.every((b, i) => b === info.signRaw32[i]);
             setWkdStatuses(prev => {
               const next = new Map(prev);
-              next.set(k.email, result ? 'published' : 'local');
+              next.set(k.email, match ? 'published' : 'mismatch');
               return next;
             });
-          })
-          .catch(() => {
+          } catch {
             setWkdStatuses(prev => {
               const next = new Map(prev);
               next.set(k.email, 'local');
               return next;
             });
-          });
+          }
+        })();
       }
     } catch (e) {
       setKeysError(e instanceof Error ? e.message : String(e));
@@ -516,7 +551,10 @@ function PgpSettingsInner() {
                             <td style={{ ...S.td, ...S.muted }}>{kp.exp ? formatDate(kp.exp) : '—'}</td>
                             <td style={S.td}>
                               <span style={S.pill(wkdStatus)}>
-                                {wkdStatus === 'checking' ? 'Checking…' : wkdStatus === 'published' ? 'Published' : 'Local'}
+                                {wkdStatus === 'checking' ? 'Checking…'
+                                  : wkdStatus === 'published' ? 'Published'
+                                  : wkdStatus === 'mismatch' ? '⚠ Mismatch'
+                                  : 'Local'}
                               </span>
                             </td>
                             <td style={S.tdActions}>
@@ -527,6 +565,14 @@ function PgpSettingsInner() {
                                   <Button
                                     label={isPublishing ? 'Publishing…' : '↑ Publish'}
                                     color="secondary"
+                                    size="small"
+                                    disabled={isPublishing}
+                                    onClick={() => handlePublish(kp)}
+                                  />
+                                ) : wkdStatus === 'mismatch' ? (
+                                  <Button
+                                    label={isPublishing ? 'Publishing…' : '↑ Re-publish'}
+                                    color="warning"
                                     size="small"
                                     disabled={isPublishing}
                                     onClick={() => handlePublish(kp)}
@@ -592,6 +638,7 @@ function PgpSettingsInner() {
                   <thead>
                     <tr>
                       <th style={S.th}>Email</th>
+                      <th style={S.th}>Fingerprint</th>
                       <th style={S.th}>Key ID (sign)</th>
                       <th style={S.th}>Key ID (ecdh)</th>
                       <th style={S.th}></th>
@@ -601,6 +648,7 @@ function PgpSettingsInner() {
                     {peerKeys.map(kp => (
                       <tr className="pgp-tr" key={kp.email}>
                         <td style={S.td}>{kp.email}</td>
+                        <td style={{ ...S.td, ...S.mono, fontSize: 11 }}>{kp.fingerprint ?? '…'}</td>
                         <td style={{ ...S.td, ...S.mono }}>{kp.kidSign ? shortKid(kp.kidSign) : '—'}</td>
                         <td style={{ ...S.td, ...S.mono }}>{kp.kidEcdh ? shortKid(kp.kidEcdh) : '—'}</td>
                         <td style={S.tdActions}>
@@ -635,8 +683,8 @@ function PgpSettingsInner() {
         />
         <HsmPasswordModal
           open={pwModalOpen}
-          onClose={() => setPwModalOpen(false)}
-          onUnlocked={loadKeys}
+          onClose={() => { setPwModalOpen(false); setUnlockCallback(null); }}
+          onUnlocked={() => { loadKeys(); unlockCallback?.(); setUnlockCallback(null); }}
         />
         <WkdImportModal
           open={importModalOpen}

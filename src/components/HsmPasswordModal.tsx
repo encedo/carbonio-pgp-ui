@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Button, Checkbox, CustomModal, Padding, PasswordInput, Row, Text } from '@zextras/carbonio-design-system';
+import { Button, Checkbox, PasswordInput, Text } from '@zextras/carbonio-design-system';
 import { useHsm, HSM_PW_KEY } from '../store/HsmContext';
+import { ModalDialog } from './ModalDialog';
 
 interface Props {
   open: boolean;
@@ -36,32 +37,32 @@ export function HsmPasswordModal({ open, onClose, onUnlocked }: Props) {
   const displayError = localError ?? error;
 
   return (
-    <CustomModal open={open} onClose={onClose} size="small">
-      <Padding all="large">
+    <ModalDialog open={open} onClose={onClose} width={400}>
+      <div style={{ padding: '24px' }}>
         <Text size="large" weight="bold">🔑 Unlock HSM</Text>
-        <Padding top="medium" />
-        <PasswordInput
-          label="HSM Password"
-          value={password}
-          onChange={e => setPassword(e.target.value)}
-          autoFocus
-          hasError={!!displayError}
-          onKeyDown={(e: React.KeyboardEvent) => { if (e.key === 'Enter') handleUnlock(); }}
-        />
+        <div style={{ marginTop: 16 }}>
+          <PasswordInput
+            label="HSM Password"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            autoFocus
+            hasError={!!displayError}
+            onKeyDown={(e: React.KeyboardEvent) => { if (e.key === 'Enter') handleUnlock(); }}
+          />
+        </div>
         {displayError && (
-          <>
-            <Padding top="small" />
+          <div style={{ marginTop: 8 }}>
             <Text size="small" color="error">{displayError}</Text>
-          </>
+          </div>
         )}
-        <Padding top="medium" />
-        <Checkbox
-          label="Save for this browser session"
-          value={saveForSession}
-          onClick={() => setSaveForSession(v => !v)}
-        />
-        <Padding top="large" />
-        <Row mainAlignment="flex-end" gap="8px">
+        <div style={{ marginTop: 16 }}>
+          <Checkbox
+            label="Save for this browser session"
+            value={saveForSession}
+            onClick={() => setSaveForSession(v => !v)}
+          />
+        </div>
+        <div style={{ marginTop: 24, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
           <Button label="Cancel" color="secondary" onClick={onClose} disabled={loading} />
           <Button
             label="Unlock"
@@ -70,8 +71,8 @@ export function HsmPasswordModal({ open, onClose, onUnlocked }: Props) {
             disabled={!password || loading}
             loading={loading}
           />
-        </Row>
-      </Padding>
-    </CustomModal>
+        </div>
+      </div>
+    </ModalDialog>
   );
 }

@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Button, CustomModal, Padding, Text } from '@zextras/carbonio-design-system';
+import { Button, Text } from '@zextras/carbonio-design-system';
 import { useHsm, encodeDescr } from '../store/HsmContext';
 import { wkdLookupParse, WkdKeyInfo } from '../lib/wkd-fetch';
+import { ModalDialog } from './ModalDialog';
 
 // DESCR schema (mirrors keychain.js — ETSPGP:peer,<email>,sign/ecdh)
 const peerSignDescr = (email: string) => encodeDescr(`ETSPGP:peer,${email},sign`);
@@ -49,7 +50,6 @@ export function WkdImportModal({ open, email, onClose, onImported }: Props) {
   const [error,   setError]   = useState<string | null>(null);
   const domain = email.split('@')[1] ?? email;
 
-  // ── Phase 1: fetch + parse (no openpgp.js) ──────────────────────────────
   useEffect(() => {
     if (!open) return;
     setPhase('fetching');
@@ -62,7 +62,6 @@ export function WkdImportModal({ open, email, onClose, onImported }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, email]);
 
-  // ── Phase 3: import to HSM ───────────────────────────────────────────────
   async function handleImport() {
     if (!keyInfo || !hem) return;
     setPhase('importing');
@@ -83,75 +82,65 @@ export function WkdImportModal({ open, email, onClose, onImported }: Props) {
   const busy = phase === 'fetching' || phase === 'importing';
 
   return (
-    <CustomModal open={open} onClose={busy ? undefined : onClose} size="medium">
-      <Padding all="large">
+    <ModalDialog open={open} onClose={busy ? undefined : onClose} width={520}>
+      <div style={{ padding: 24 }}>
         <Text size="large" weight="bold">Import Peer Key from WKD</Text>
-        <Padding top="medium" />
+        <div style={{ marginTop: 16 }}>
 
-        {/* ── Fetching ── */}
-        {phase === 'fetching' && (
-          <>
-            <Text>
-              Looking up key for <strong>{email}</strong> via Web Key Directory…
-            </Text>
-            <Padding top="medium" />
+          {phase === 'fetching' && (
+            <>
+              <Text>Looking up key for <strong>{email}</strong> via Web Key Directory…</Text>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: '#718096', fontSize: 13, marginTop: 16 }}>
+                <Spinner />
+                Fetching from openpgpkey.{domain}…
+              </div>
+            </>
+          )}
+
+          {phase === 'found' && keyInfo && (
+            <>
+              <Text>Found PGP key for <strong>{email}</strong>. Import to HSM?</Text>
+              <div style={ROW}>
+                <div>
+                  <div style={LABEL}>Ed25519 (sign)</div>
+                  <span style={MONO}>{keyInfo.signHex}</span>
+                </div>
+                <div>
+                  <div style={LABEL}>X25519 (ecdh)</div>
+                  <span style={MONO}>{keyInfo.ecdhHex}</span>
+                </div>
+              </div>
+            </>
+          )}
+
+          {phase === 'importing' && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: '#718096', fontSize: 13 }}>
               <Spinner />
-              Fetching from openpgpkey.{domain}…
+              Importing keys to HSM…
             </div>
-          </>
-        )}
+          )}
 
-        {/* ── Found — confirm ── */}
-        {phase === 'found' && keyInfo && (
-          <>
-            <Text>
-              Found PGP key for <strong>{email}</strong>. Import to HSM?
-            </Text>
-            <div style={ROW}>
-              <div>
-                <div style={LABEL}>Ed25519 (sign)</div>
-                <span style={MONO}>{keyInfo.signHex}</span>
-              </div>
-              <div>
-                <div style={LABEL}>X25519 (ecdh)</div>
-                <span style={MONO}>{keyInfo.ecdhHex}</span>
-              </div>
-            </div>
-          </>
-        )}
+          {phase === 'done' && (
+            <Text color="success">Keys imported successfully to HSM.</Text>
+          )}
 
-        {/* ── Importing ── */}
-        {phase === 'importing' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: '#718096', fontSize: 13 }}>
-            <Spinner />
-            Importing keys to HSM…
-          </div>
-        )}
+          {phase === 'error' && (
+            <Text color="error">{error}</Text>
+          )}
+        </div>
 
-        {/* ── Done ── */}
-        {phase === 'done' && (
-          <Text color="success">Keys imported successfully to HSM.</Text>
-        )}
-
-        {/* ── Error ── */}
-        {phase === 'error' && (
-          <Text color="error">{error}</Text>
-        )}
-
-        <Padding top="large" />
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <div style={{ marginTop: 24, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
           {phase === 'found' && (
             <>
-              <Button label="Cancel"          color="secondary" onClick={onClose}      />
-              <Button label="Import to HSM"   color="primary"   onClick={handleImport} />
+              <Button label="Cancel"        color="secondary" onClick={onClose}      />
+              <Button label="Import to HSM" color="primary"   onClick={handleImport} />
             </>
           )}
           {(phase === 'done' || phase === 'error' || phase === 'fetching') && (
             <Button label="Close" color="secondary" onClick={onClose} disabled={busy} />
           )}
         </div>
-      </Padding>
-    </CustomModal>
+      </div>
+    </ModalDialog>
   );
 }

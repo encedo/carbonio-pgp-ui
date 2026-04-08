@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Button, CustomModal, Padding, Text } from '@zextras/carbonio-design-system';
+import { Button, Text } from '@zextras/carbonio-design-system';
+import { ModalDialog } from './ModalDialog';
 // @ts-expect-error — carbonio-shell-ui types incomplete but these hooks exist at runtime
 import { useUserAccount, useUserSettings } from '@zextras/carbonio-shell-ui';
 import { useHsm, DESCR, encodeDescr } from '../store/HsmContext';
@@ -225,108 +226,108 @@ export function KeygenModal({ open, onClose, onGenerated, onPublished, disabledE
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <CustomModal open={open} onClose={busy ? undefined : onClose} size="medium">
-      <Padding all="large">
+    <ModalDialog open={open} onClose={busy ? undefined : onClose} width={540}>
+      <div style={{ padding: 24 }}>
         <Text size="large" weight="bold">Generate New PGP Key</Text>
-        <Padding top="medium" />
+        <div style={{ marginTop: 16 }}>
 
-        {/* ── Form ── */}
-        {phase === 'form' && (
-          <>
-            <div style={INFO_BOX}>
-              Two key pairs will be generated on the HSM: <strong>Ed25519</strong> (signing) and{' '}
-              <strong>X25519</strong> (encryption). Private keys never leave the device.
-            </div>
-
-            <div style={{ marginBottom: 16 }}>
-              <label style={LABEL}>Email address</label>
-              {availableEmails.length > 1 ? (
-                <select style={SELECT} value={email} onChange={e => setEmail(e.target.value)}>
-                  {availableEmails.map(e => <option key={e} value={e}>{e}</option>)}
-                </select>
-              ) : availableEmails.length === 0 ? (
-                <div style={{ ...SELECT, background: '#f7fafc', cursor: 'default', color: '#a0aec0' }}>
-                  All email addresses already have keys
-                </div>
-              ) : (
-                <div style={{ ...SELECT, background: '#f7fafc', cursor: 'default', color: '#4a5568' }}>
-                  {email || '—'}
-                </div>
-              )}
-            </div>
-
-            <div style={{ marginBottom: 8 }}>
-              <label style={LABEL}>Expiry</label>
-              <select
-                style={SELECT}
-                value={expiryYears}
-                onChange={e => setExpiryYears(Number(e.target.value))}
-              >
-                {EXPIRY_OPTIONS.map(o => (
-                  <option key={o.years} value={o.years}>{o.label}</option>
-                ))}
-              </select>
-            </div>
-          </>
-        )}
-
-        {/* ── Generating ── */}
-        {phase === 'generating' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: '#718096', fontSize: 13 }}>
-            <Spinner />
-            Generating keys on HSM…
-          </div>
-        )}
-
-        {/* ── Done ── */}
-        {phase === 'done' && generated && (
-          <>
-            <div style={SUCCESS_BOX}>
-              <div style={{ fontWeight: 600, marginBottom: 8 }}>Keys generated successfully</div>
-              <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', fontSize: 12 }}>
-                <div>
-                  <div style={{ color: '#276749', marginBottom: 3 }}>Ed25519 (sign)</div>
-                  <span style={MONO}>{generated.kidSign.replace(/(.{8})(?=.)/g, '$1 ').slice(0, 19)}</span>
-                </div>
-                <div>
-                  <div style={{ color: '#276749', marginBottom: 3 }}>X25519 (ecdh)</div>
-                  <span style={MONO}>{generated.kidEcdh.replace(/(.{8})(?=.)/g, '$1 ').slice(0, 19)}</span>
-                </div>
-              </div>
-            </div>
-
-            <Padding top="medium" />
-
-            {!published ? (
-              <>
-                <Text>Publish public key to WKD so others can send you encrypted mail?</Text>
-                <Padding top="small" />
-                <Text size="small" color="secondary">
-                  Will be published to: {wkdBase}/api/publish
-                </Text>
-                {error && (
-                  <>
-                    <Padding top="small" />
-                    <Text color="error" size="small">{error}</Text>
-                  </>
-                )}
-              </>
-            ) : (
-              <Text color="success">Key published to WKD successfully.</Text>
-            )}
-          </>
-        )}
-
-        {/* ── Error ── */}
-        {phase === 'error' && (
-          <Text color="error">{error}</Text>
-        )}
-
-        <Padding top="large" />
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          {/* ── Form ── */}
           {phase === 'form' && (
             <>
-              <Button label="Cancel"          color="secondary" onClick={onClose} />
+              <div style={INFO_BOX}>
+                Two key pairs will be generated on the HSM: <strong>Ed25519</strong> (signing) and{' '}
+                <strong>X25519</strong> (encryption). Private keys never leave the device.
+              </div>
+
+              <div style={{ marginBottom: 16 }}>
+                <label style={LABEL}>Email address</label>
+                {availableEmails.length > 1 ? (
+                  <select style={SELECT} value={email} onChange={e => setEmail(e.target.value)}>
+                    {availableEmails.map(e => <option key={e} value={e}>{e}</option>)}
+                  </select>
+                ) : availableEmails.length === 0 ? (
+                  <div style={{ ...SELECT, background: '#f7fafc', cursor: 'default', color: '#a0aec0' }}>
+                    All email addresses already have keys
+                  </div>
+                ) : (
+                  <div style={{ ...SELECT, background: '#f7fafc', cursor: 'default', color: '#4a5568' }}>
+                    {email || '—'}
+                  </div>
+                )}
+              </div>
+
+              <div style={{ marginBottom: 8 }}>
+                <label style={LABEL}>Expiry</label>
+                <select
+                  style={SELECT}
+                  value={expiryYears}
+                  onChange={e => setExpiryYears(Number(e.target.value))}
+                >
+                  {EXPIRY_OPTIONS.map(o => (
+                    <option key={o.years} value={o.years}>{o.label}</option>
+                  ))}
+                </select>
+              </div>
+            </>
+          )}
+
+          {/* ── Generating ── */}
+          {phase === 'generating' && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: '#718096', fontSize: 13 }}>
+              <Spinner />
+              Generating keys on HSM…
+            </div>
+          )}
+
+          {/* ── Done ── */}
+          {phase === 'done' && generated && (
+            <>
+              <div style={SUCCESS_BOX}>
+                <div style={{ fontWeight: 600, marginBottom: 8 }}>Keys generated successfully</div>
+                <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', fontSize: 12 }}>
+                  <div>
+                    <div style={{ color: '#276749', marginBottom: 3 }}>Ed25519 (sign)</div>
+                    <span style={MONO}>{generated.kidSign.replace(/(.{8})(?=.)/g, '$1 ').slice(0, 19)}</span>
+                  </div>
+                  <div>
+                    <div style={{ color: '#276749', marginBottom: 3 }}>X25519 (ecdh)</div>
+                    <span style={MONO}>{generated.kidEcdh.replace(/(.{8})(?=.)/g, '$1 ').slice(0, 19)}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ marginTop: 16 }}>
+                {!published ? (
+                  <>
+                    <Text>Publish public key to WKD so others can send you encrypted mail?</Text>
+                    <div style={{ marginTop: 6 }}>
+                      <Text size="small" color="secondary">
+                        Will be published to: {wkdBase}/api/publish
+                      </Text>
+                    </div>
+                    {error && (
+                      <div style={{ marginTop: 6 }}>
+                        <Text color="error" size="small">{error}</Text>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <Text color="success">Key published to WKD successfully.</Text>
+                )}
+              </div>
+            </>
+          )}
+
+          {/* ── Error ── */}
+          {phase === 'error' && (
+            <Text color="error">{error}</Text>
+          )}
+        </div>
+
+        <div style={{ marginTop: 24, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          {phase === 'form' && (
+            <>
+              <Button label="Cancel"        color="secondary" onClick={onClose} />
               <Button
                 label="Generate on HSM"
                 color="primary"
@@ -340,20 +341,15 @@ export function KeygenModal({ open, onClose, onGenerated, onPublished, disabledE
           )}
           {phase === 'done' && !published && (
             <>
-              <Button label="Skip"            color="secondary" onClick={onClose}       disabled={publishing} />
-              <Button
-                label={publishing ? 'Publishing…' : '↑ Publish to WKD'}
-                color="primary"
-                onClick={handlePublish}
-                disabled={publishing}
-              />
+              <Button label="Skip"                                    color="secondary" onClick={onClose}       disabled={publishing} />
+              <Button label={publishing ? 'Publishing…' : '↑ Publish to WKD'} color="primary" onClick={handlePublish} disabled={publishing} />
             </>
           )}
-          {(phase === 'done' && published) || phase === 'error' ? (
+          {((phase === 'done' && published) || phase === 'error') && (
             <Button label="Close" color="secondary" onClick={onClose} />
-          ) : null}
+          )}
         </div>
-      </Padding>
-    </CustomModal>
+      </div>
+    </ModalDialog>
   );
 }
