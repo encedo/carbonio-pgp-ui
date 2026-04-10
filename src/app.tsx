@@ -244,7 +244,9 @@ function extractHtmlFromMime(plaintext: string): string {
   // Split into MIME parts — walk recursively, collect text/html and text/plain leaves
   interface MimePart { ct: string; cte: string; body: string }
 
-  function parseParts(text: string): MimePart[] {
+  const MIME_MAX_DEPTH = 8;
+  function parseParts(text: string, depth = 0): MimePart[] {
+    if (depth >= MIME_MAX_DEPTH) return [];
     const headerEnd = text.search(/\r?\n\r?\n/);
     if (headerEnd === -1) return [];
     const headerBlock = text.slice(0, headerEnd);
@@ -268,7 +270,7 @@ function extractHtmlFromMime(plaintext: string): string {
         const chunk = body.slice(indices[i]).replace(/^\r?\n/, '');
         const end = body.indexOf(`--${boundary}`, indices[i]);
         const partText = end !== -1 ? body.slice(indices[i], end).replace(/^\r?\n/, '') : chunk;
-        parts.push(...parseParts(partText));
+        parts.push(...parseParts(partText, depth + 1));
       }
       return parts;
     }

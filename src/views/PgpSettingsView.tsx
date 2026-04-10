@@ -165,6 +165,10 @@ function getCarbonioAuthToken(): string | undefined {
   return match ? decodeURIComponent(match[1]) : undefined;
 }
 
+function isValidEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email);
+}
+
 function formatDate(ts: number): string {
   return new Date(ts * 1000).toISOString().slice(0, 10);
 }
@@ -451,7 +455,7 @@ function PgpSettingsInner() {
 
   function handleImportClick() {
     const email = peerEmailInput.trim();
-    if (!email.includes('@')) return;
+    if (!isValidEmail(email)) return;
     setImportEmail(email);
     setImportModalOpen(true);
   }
@@ -655,7 +659,7 @@ function PgpSettingsInner() {
                 label="⬇ Import from WKD"
                 color="primary"
                 onClick={handleImportClick}
-                disabled={!unlocked || !peerEmailInput.trim().includes('@')}
+                disabled={!unlocked || !isValidEmail(peerEmailInput.trim())}
               />
             </div>
 
