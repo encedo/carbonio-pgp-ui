@@ -145,7 +145,7 @@ export type PgpSendParams = {
   requireSecret(callSecret);
   const { hem, listToken } = _singleton.state;
   if (!hem || !listToken) throw new Error('HSM not connected');
-  if (_singleton.userEmail && params.senderEmail !== _singleton.userEmail) {
+  if (_singleton.userEmails.size > 0 && !_singleton.userEmails.has(params.senderEmail)) {
     throw new Error(`Unauthorized: senderEmail does not match logged-in user`);
   }
 
@@ -174,7 +174,7 @@ export type PgpSendParams = {
   requireSecret(callSecret);
   const { hem, listToken } = _singleton.state;
   if (!hem || !listToken) throw new Error('HSM not connected');
-  if (_singleton.userEmail && params.senderEmail !== _singleton.userEmail) {
+  if (_singleton.userEmails.size > 0 && !_singleton.userEmails.has(params.senderEmail)) {
     throw new Error(`Unauthorized: senderEmail does not match logged-in user`);
   }
 

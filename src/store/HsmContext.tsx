@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 // @ts-expect-error — carbonio-shell-ui types incomplete but hooks exist at runtime
-import { useUserAccount } from '@zextras/carbonio-shell-ui';
+import { useUserAccount, useUserSettings } from '@zextras/carbonio-shell-ui';
 import { HEM } from '../../../hem-sdk-js/hem-sdk.browser.js';
 import { patchWebCrypto } from '../lib/webcrypto-patch';
 
@@ -81,7 +81,6 @@ export interface HsmContextValue extends HsmState {
   connect: (password: string) => Promise<void>;
   disconnect: () => void;
   authorize: (scope: string) => Promise<string>;
-  setUserEmail: (email: string) => void;
 }
 
 // ── Module-level singleton — survives React unmount/remount ───────────────────
@@ -94,7 +93,7 @@ const TOKEN_TTL   = 8 * 3600;
 // Exported so app.tsx can expose HSM state to mails-ui via window globals.
 // NOTE: password is never stored here — derived keys live inside the HEM instance (#derivedKeys).
 export const _singleton = {
-  userEmail: '',  // set by PgpSettingsView via setUserEmail(); used for senderEmail validation
+  userEmails: new Set<string>(),  // primary + aliases; synced from Carbonio account in HsmProvider
   tokenCache: new Map<string, { token: string; expiresAt: number }>(),
   ecdhFingerprintCache: new Map<string, Uint8Array>(), // email → ECDH subkey fingerprint
   state: {
@@ -124,11 +123,22 @@ export function HsmProvider({ children }: { children: React.ReactNode }) {
   // Initialize React state from singleton — picks up state after remount
   const [state, setState] = useState<HsmState>(() => ({ ..._singleton.state }));
 
-  // Sync logged-in user email to singleton for senderEmail validation in app.tsx globals
+  // Sync all user emails (primary + aliases) to singleton for senderEmail validation
   const account = useUserAccount();
+  const settings = useUserSettings();
   useEffect(() => {
-    _singleton.userEmail = (account?.name ?? '') as string;
-  }, [account?.name]);
+    const emails = new Set<string>();
+    const name = account?.name as string | undefined;
+    if (name) emails.add(name);
+    const aliases = (settings as any)?.attrs?.zimbraMailAlias;
+    const allowFrom = (settings as any)?.attrs?.zimbraAllowFromAddress;
+    [aliases, allowFrom].flat().filter(Boolean).forEach((e: string) => emails.add(e));
+    for (const identity of (account as any)?.identities?.identity ?? []) {
+      const from = identity._attrs?.zimbraPrefFromAddress;
+      if (from) emails.add(from as string);
+    }
+    _singleton.userEmails = new Set([...emails].filter((e: string) => e.includes('@')));
+  }, [account, settings]);
 
   // Keep singleton in sync whenever React state changes
   useEffect(() => {
@@ -201,12 +211,9 @@ export function HsmProvider({ children }: { children: React.ReactNode }) {
     return authorizeWithCache(hem, scope);
   }, []);
 
-  const setUserEmail = useCallback((email: string) => {
-    _singleton.userEmail = email;
-  }, []);
 
   return (
-    <HsmContext.Provider value={{ ...state, setUrl, connect, disconnect, authorize, setUserEmail }}>
+    <HsmContext.Provider value={{ ...state, setUrl, connect, disconnect, authorize }}>
       {children}
     </HsmContext.Provider>
   );
