@@ -81,12 +81,11 @@ async function localDecryptPkesk(
 async function authorizeScope(scope: string): Promise<string> {
   const { hem } = _singleton.state;
   if (!hem) throw new Error('HSM not connected');
-  const pw = _singleton.password;
-  if (!pw) throw new Error('Password not available — unlock HSM first');
   const cached = _singleton.tokenCache.get(scope);
   if (cached && Date.now() < cached.expiresAt) return cached.token;
   const TOKEN_TTL = 8 * 3600;
-  const token = await hem.authorizePassword(pw, scope, TOKEN_TTL);
+  // Pass '' — HEM reuses cached derived keys from connect(); password never stored here.
+  const token = await hem.authorizePassword('', scope, TOKEN_TTL);
   _singleton.tokenCache.set(scope, { token, expiresAt: Date.now() + TOKEN_TTL * 1000 - 30_000 });
   return token;
 }

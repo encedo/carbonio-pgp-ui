@@ -89,8 +89,8 @@ const TOKEN_TTL   = 8 * 3600;
 
 // Mutable singleton — shared across all HsmProvider instances/remounts.
 // Exported so app.tsx can expose HSM state to mails-ui via window globals.
+// NOTE: password is never stored here — derived keys live inside the HEM instance (#derivedKeys).
 export const _singleton = {
-  password:   '' as string,
   tokenCache: new Map<string, { token: string; expiresAt: number }>(),
   ecdhFingerprintCache: new Map<string, Uint8Array>(), // email → ECDH subkey fingerprint
   state: {
@@ -107,10 +107,11 @@ export const _singleton = {
 
 const HsmContext = createContext<HsmContextValue | null>(null);
 
-async function authorizeWithCache(hem: InstanceType<typeof HEM>, password: string, scope: string): Promise<string> {
+async function authorizeWithCache(hem: InstanceType<typeof HEM>, scope: string): Promise<string> {
   const cached = _singleton.tokenCache.get(scope);
   if (cached && Date.now() < cached.expiresAt) return cached.token;
-  const token = await hem.authorizePassword(password, scope, TOKEN_TTL);
+  // Pass null — HEM uses cached derived keys (set during connect); password never stored here.
+  const token = await hem.authorizePassword('', scope, TOKEN_TTL);
   _singleton.tokenCache.set(scope, { token, expiresAt: Date.now() + TOKEN_TTL * 1000 - 30_000 });
   return token;
 }
@@ -126,7 +127,7 @@ export function HsmProvider({ children }: { children: React.ReactNode }) {
 
   const setUrl = useCallback((url: string) => {
     localStorage.setItem(HSM_URL_KEY, url);
-    _singleton.password = '';
+    _singleton.state.hem?.clearKeys();
     _singleton.tokenCache.clear();
     const next: HsmState = {
       ...state,
@@ -145,12 +146,10 @@ export function HsmProvider({ children }: { children: React.ReactNode }) {
       await hem.hemCheckin();
       _singleton.tokenCache.clear();
 
-      const listToken = await authorizeWithCache(hem, password, 'keymgmt:list');
-
-      _singleton.password = password;
-      if (sessionStorage.getItem(HSM_PW_KEY)) {
-        sessionStorage.setItem(HSM_PW_KEY, password);
-      }
+      // First call passes the real password — HEM derives and caches the X25519 keys,
+      // then zeros the intermediate byte buffers. Password is not stored anywhere after this.
+      const listToken = await hem.authorizePassword(password, 'keymgmt:list', TOKEN_TTL);
+      _singleton.tokenCache.set('keymgmt:list', { token: listToken, expiresAt: Date.now() + TOKEN_TTL * 1000 - 30_000 });
 
       const next: HsmState = {
         ..._singleton.state,
@@ -174,7 +173,7 @@ export function HsmProvider({ children }: { children: React.ReactNode }) {
 
   const disconnect = useCallback(() => {
     sessionStorage.removeItem(HSM_PW_KEY);
-    _singleton.password = '';
+    _singleton.state.hem?.clearKeys();
     _singleton.tokenCache.clear();
     const next: HsmState = {
       ..._singleton.state,
@@ -188,9 +187,8 @@ export function HsmProvider({ children }: { children: React.ReactNode }) {
   const authorize = useCallback(async (scope: string): Promise<string> => {
     const { hem } = _singleton.state;
     if (!hem) throw new Error('HSM not connected');
-    const pw = _singleton.password || sessionStorage.getItem(HSM_PW_KEY) || '';
-    if (!pw) throw new Error('Password not available — please unlock HSM again');
-    return authorizeWithCache(hem, pw, scope);
+    // No password needed — HEM reuses cached derived keys from connect().
+    return authorizeWithCache(hem, scope);
   }, []);
 
   return (
