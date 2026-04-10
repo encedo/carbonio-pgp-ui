@@ -1,4 +1,5 @@
 import * as openpgp from 'openpgp';
+// @ts-expect-error — carbonio-shell-ui types incomplete but hooks exist at runtime
 import { addRoute, registerFunctions } from '@zextras/carbonio-shell-ui';
 import { HsmProvider, _singleton, decodeDescr } from './store/HsmContext';
 import { patchWebCrypto } from './lib/webcrypto-patch';
