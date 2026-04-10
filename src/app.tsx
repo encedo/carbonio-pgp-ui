@@ -69,8 +69,10 @@ async function localDecryptPkesk(
     : ephemeralWithPrefix;
   const ephemeralB64 = btoa(String.fromCharCode(...Array.from(ephemeral32)));
   const sharedSecret: Uint8Array = await hem.ecdh(token, kid_ecdh, ephemeralB64);
-  const kwk = await rfc6637kdfLocal(new Uint8Array(sharedSecret), fingerprint);
+  const kwk = await rfc6637kdfLocal(sharedSecret, fingerprint);
+  sharedSecret.fill(0);
   const unwrapped = await aesKwUnwrapLocal(kwk, wrappedKey);
+  kwk.fill(0);
   const sessionKeyData = stripSessionKeyEncoding(unwrapped);
   const algoName = openpgp.enums.read(openpgp.enums.symmetric, algoId) as openpgp.SessionKey['algorithm'];
   return { data: sessionKeyData, algorithm: algoName };
@@ -104,6 +106,24 @@ async function wkdReadKey(email: string) {
 
 // ── Window globals — consumed by carbonio-mails-ui ────────────────────────────
 
+// One-time call secret — required by all sensitive window globals.
+// __encedoPgpRegister() returns the secret and self-deletes; only the first caller gets it.
+// Prevents accidental misuse by other Iris modules or supply-chain scripts.
+const _callSecret: string = Array.from(
+  crypto.getRandomValues(new Uint8Array(16))
+).map(b => b.toString(16).padStart(2, '0')).join('');
+
+function requireSecret(provided: unknown): void {
+  if (provided !== _callSecret) throw new Error('Unauthorized: invalid call token');
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(window as any).__encedoPgpRegister = (): string => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  delete (window as any).__encedoPgpRegister;
+  return _callSecret;
+};
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (window as any).__encedoPgpGetHsm = () => _singleton.state;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -121,9 +141,13 @@ export type PgpSendParams = {
  * Returns the armored PGP SIGNED MESSAGE string.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-(window as any).__encedoPgpSignOnly = async (params: PgpSendParams): Promise<string> => {
+(window as any).__encedoPgpSignOnly = async (params: PgpSendParams, callSecret?: unknown): Promise<string> => {
+  requireSecret(callSecret);
   const { hem, listToken } = _singleton.state;
   if (!hem || !listToken) throw new Error('HSM not connected');
+  if (_singleton.userEmail && params.senderEmail !== _singleton.userEmail) {
+    throw new Error(`Unauthorized: senderEmail does not match logged-in user`);
+  }
 
   const { signCleartextMessage, buildCertificate } = await getPgp();
 
@@ -146,9 +170,13 @@ export type PgpSendParams = {
  * Returns the armored PGP MESSAGE string (RFC 3156 payload).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-(window as any).__encedoPgpEncryptAndSign = async (params: PgpSendParams): Promise<string> => {
+(window as any).__encedoPgpEncryptAndSign = async (params: PgpSendParams, callSecret?: unknown): Promise<string> => {
+  requireSecret(callSecret);
   const { hem, listToken } = _singleton.state;
   if (!hem || !listToken) throw new Error('HSM not connected');
+  if (_singleton.userEmail && params.senderEmail !== _singleton.userEmail) {
+    throw new Error(`Unauthorized: senderEmail does not match logged-in user`);
+  }
 
   const { buildHsmSignaturePkt } = await getPgp();
 
@@ -284,7 +312,8 @@ type PgpDecryptResult = {
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-(window as any).__encedoPgpDecrypt = async (params: PgpDecryptParams): Promise<PgpDecryptResult> => {
+(window as any).__encedoPgpDecrypt = async (params: PgpDecryptParams, callSecret?: unknown): Promise<PgpDecryptResult> => {
+  requireSecret(callSecret);
   const { hem, listToken } = _singleton.state;
 
   if (params.mode === 'sign') {

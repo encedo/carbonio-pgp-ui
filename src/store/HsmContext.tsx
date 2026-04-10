@@ -1,4 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+// @ts-expect-error — carbonio-shell-ui types incomplete but hooks exist at runtime
+import { useUserAccount } from '@zextras/carbonio-shell-ui';
 import { HEM } from '../../../hem-sdk-js/hem-sdk.browser.js';
 import { patchWebCrypto } from '../lib/webcrypto-patch';
 
@@ -79,6 +81,7 @@ export interface HsmContextValue extends HsmState {
   connect: (password: string) => Promise<void>;
   disconnect: () => void;
   authorize: (scope: string) => Promise<string>;
+  setUserEmail: (email: string) => void;
 }
 
 // ── Module-level singleton — survives React unmount/remount ───────────────────
@@ -91,6 +94,7 @@ const TOKEN_TTL   = 8 * 3600;
 // Exported so app.tsx can expose HSM state to mails-ui via window globals.
 // NOTE: password is never stored here — derived keys live inside the HEM instance (#derivedKeys).
 export const _singleton = {
+  userEmail: '',  // set by PgpSettingsView via setUserEmail(); used for senderEmail validation
   tokenCache: new Map<string, { token: string; expiresAt: number }>(),
   ecdhFingerprintCache: new Map<string, Uint8Array>(), // email → ECDH subkey fingerprint
   state: {
@@ -119,6 +123,12 @@ async function authorizeWithCache(hem: InstanceType<typeof HEM>, scope: string):
 export function HsmProvider({ children }: { children: React.ReactNode }) {
   // Initialize React state from singleton — picks up state after remount
   const [state, setState] = useState<HsmState>(() => ({ ..._singleton.state }));
+
+  // Sync logged-in user email to singleton for senderEmail validation in app.tsx globals
+  const account = useUserAccount();
+  useEffect(() => {
+    _singleton.userEmail = (account?.name ?? '') as string;
+  }, [account?.name]);
 
   // Keep singleton in sync whenever React state changes
   useEffect(() => {
@@ -191,8 +201,12 @@ export function HsmProvider({ children }: { children: React.ReactNode }) {
     return authorizeWithCache(hem, scope);
   }, []);
 
+  const setUserEmail = useCallback((email: string) => {
+    _singleton.userEmail = email;
+  }, []);
+
   return (
-    <HsmContext.Provider value={{ ...state, setUrl, connect, disconnect, authorize }}>
+    <HsmContext.Provider value={{ ...state, setUrl, connect, disconnect, authorize, setUserEmail }}>
       {children}
     </HsmContext.Provider>
   );

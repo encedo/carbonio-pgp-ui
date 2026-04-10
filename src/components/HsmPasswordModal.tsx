@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { Button, Checkbox, PasswordInput, Text } from '@zextras/carbonio-design-system';
-import { useHsm, HSM_PW_KEY } from '../store/HsmContext';
+import { Button, PasswordInput, Text } from '@zextras/carbonio-design-system';
+import { useHsm } from '../store/HsmContext';
 import { ModalDialog } from './ModalDialog';
 
 interface Props {
@@ -11,8 +11,7 @@ interface Props {
 
 export function HsmPasswordModal({ open, onClose, onUnlocked }: Props) {
   const { connect, error } = useHsm();
-  const [password, setPassword] = useState(() => sessionStorage.getItem(HSM_PW_KEY) ?? '');
-  const [saveForSession, setSaveForSession] = useState(false);
+  const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
 
@@ -21,10 +20,8 @@ export function HsmPasswordModal({ open, onClose, onUnlocked }: Props) {
     setLoading(true);
     setLocalError(null);
     try {
-      if (saveForSession) {
-        sessionStorage.setItem(HSM_PW_KEY, password);
-      }
       await connect(password);
+      setPassword('');
       onUnlocked?.();
       onClose();
     } catch (e) {
@@ -55,13 +52,6 @@ export function HsmPasswordModal({ open, onClose, onUnlocked }: Props) {
             <Text size="small" color="error">{displayError}</Text>
           </div>
         )}
-        <div style={{ marginTop: 16 }}>
-          <Checkbox
-            label="Save for this browser session"
-            value={saveForSession}
-            onClick={() => setSaveForSession(v => !v)}
-          />
-        </div>
         <div style={{ marginTop: 24, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
           <Button label="Cancel" color="secondary" onClick={onClose} disabled={loading} />
           <Button
