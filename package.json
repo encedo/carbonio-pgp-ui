@@ -1,6 +1,6 @@
 {
   "name": "carbonio-pgp-ui",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "PGP encryption/decryption for Carbonio via Encedo HEM",
   "main": "src/app.tsx",
   "engines": {
