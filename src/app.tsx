@@ -280,12 +280,26 @@ function extractHtmlFromMime(plaintext: string): string {
 
   function decodeBody(part: MimePart): string {
     if (part.cte === 'base64') {
-      try { return atob(part.body.replace(/\s/g, '')); } catch { return part.body; }
+      try {
+        const binary = atob(part.body.replace(/\s/g, ''));
+        const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
+        return new TextDecoder('utf-8').decode(bytes);
+      } catch { return part.body; }
     }
     if (part.cte === 'quoted-printable') {
-      return part.body
-        .replace(/=\r?\n/g, '')
-        .replace(/=([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+      const unfolded = part.body.replace(/=\r?\n/g, '');
+      const bytes: number[] = [];
+      let i = 0;
+      while (i < unfolded.length) {
+        if (unfolded[i] === '=' && i + 2 < unfolded.length) {
+          bytes.push(parseInt(unfolded.slice(i + 1, i + 3), 16));
+          i += 3;
+        } else {
+          bytes.push(unfolded.charCodeAt(i));
+          i++;
+        }
+      }
+      return new TextDecoder('utf-8').decode(new Uint8Array(bytes));
     }
     return part.body;
   }
