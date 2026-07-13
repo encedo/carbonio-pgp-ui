@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Button, Icon, Input, Spinner, Text } from '@zextras/carbonio-design-system';
+import { Button, Checkbox, Icon, Input, Spinner, Text } from '@zextras/carbonio-design-system';
 import { decodeDescr, useHsm, DESCR_PREFIX, DESCR, encodeDescr } from '../store/HsmContext';
 import { patchWebCrypto } from '../lib/webcrypto-patch';
+import { getPgpPrefs, setPgpPref, PgpPrefs } from '../lib/pgp-prefs';
 import { wkdLookupParse } from '../lib/wkd-fetch';
 import { HsmUrlModal } from '../components/HsmUrlModal';
 import { HsmPasswordModal } from '../components/HsmPasswordModal';
@@ -199,6 +200,13 @@ function PgpSettingsInner() {
       delete (window as any).__encedoPgpRequestUnlock;
     };
   }, [url]);
+
+  const [prefs, setPrefs] = useState<PgpPrefs>(() => getPgpPrefs());
+
+  const togglePref = useCallback((pref: keyof PgpPrefs, value: boolean) => {
+    setPgpPref(pref, value);
+    setPrefs(prev => ({ ...prev, [pref]: value }));
+  }, []);
 
   const [selfKeys,    setSelfKeys]    = useState<KeyPair[]>([]);
   const [peerKeys,    setPeerKeys]    = useState<PeerKeyPair[]>([]);
@@ -514,6 +522,50 @@ function PgpSettingsInner() {
                 </>
               )}
 
+            </div>
+          </div>
+        </div>
+
+        {/* ── Preferences ────────────────────────────────────────────── */}
+        <div style={S.section}>
+          <div style={S.sectionHeader}>
+            <div style={S.sectionTitle}>
+              <Icon icon="SettingsOutline" size="small" />
+              Preferences
+            </div>
+          </div>
+          <div style={S.sectionBody}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div>
+                <Checkbox
+                  label="Always sign"
+                  value={prefs.alwaysSign}
+                  onChange={(checked: boolean) => togglePref('alwaysSign', checked)}
+                />
+                <div style={{ ...S.muted, marginLeft: 30 }}>
+                  Every outgoing message is signed with your own key. Requires an unlocked HSM.
+                </div>
+              </div>
+              <div>
+                <Checkbox
+                  label="Always encrypt if key available"
+                  value={prefs.alwaysEncrypt}
+                  onChange={(checked: boolean) => togglePref('alwaysEncrypt', checked)}
+                />
+                <div style={{ ...S.muted, marginLeft: 30 }}>
+                  Encryption is turned on automatically when every recipient has a key (WKD or imported).
+                </div>
+              </div>
+              <div>
+                <Checkbox
+                  label="Auto decrypt"
+                  value={prefs.autoDecrypt}
+                  onChange={(checked: boolean) => togglePref('autoDecrypt', checked)}
+                />
+                <div style={{ ...S.muted, marginLeft: 30 }}>
+                  Encrypted messages are decrypted on open, without clicking Decrypt.
+                </div>
+              </div>
             </div>
           </div>
         </div>

@@ -39,6 +39,8 @@ src/
     PgpSettingsView.tsx        ← main settings panel (HSM status, My Keys, Peer Keys)
                                   registers window.__encedoPgpRequestUnlock
   lib/
+    pgp-prefs.ts               ← alwaysSign / alwaysEncrypt / autoDecrypt in localStorage
+                                  mirrored read-only by mails-ui src/commons/pgp-prefs.ts
     wkd-fetch.ts               ← WKD HTTP fetch + pure OpenPGP binary parser (no openpgp.js)
                                   validates Ed25519 + X25519 OIDs, computes v4 fingerprint
     webcrypto-patch.ts         ← patches globalThis.crypto = window.crypto before openpgp.js loads
