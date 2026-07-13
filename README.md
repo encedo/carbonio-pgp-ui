@@ -135,20 +135,26 @@ sudo -u zextras /opt/zextras/bin/zmprov gcf carbonioReverseProxyResponseCSPHeade
 `https:` in `connect-src` is what allows the browser to talk to the HSM, which may sit at
 any address on the user's local network.
 
-### 2. CORS on the HSM's nginx
+### 2. CORS on the HSM
 
-The HSM is a different origin than the webmail, and typically a *private* address reached
-from a *public* one — which triggers the Private Network Access preflight.
+The HSM is a different origin than the webmail, and usually a *private* address reached from
+a *public* one, so both plain CORS and Private Network Access (PNA) are in play.
 
 ```nginx
 add_header Access-Control-Allow-Origin      $http_origin  always;
 add_header Cross-Origin-Resource-Policy     cross-origin  always;
-# on the OPTIONS (preflight) response:
-add_header Access-Control-Allow-Private-Network true      always;
 ```
 
 Without `Access-Control-Allow-Origin` the browser refuses to read
 `GET /api/system/version` and the module reports the HSM as unreachable.
+
+**Private Network Access — not covered yet.** A public origin reaching a private address
+makes the browser send a PNA preflight expecting
+`Access-Control-Allow-Private-Network: true` on the `OPTIONS` response. Current HEM firmware
+does not emit that header; **support is planned for the next firmware release**. Until then
+Chrome and Firefox only warn in the console, but once they start enforcing PNA the HSM will
+become unreachable from the webmail on an un-upgraded device — this is the blocker to track,
+not an nginx setting we can add on the Carbonio side.
 
 ### 3. Deploy
 
