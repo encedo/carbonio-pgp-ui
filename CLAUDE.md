@@ -88,21 +88,26 @@ window.__encedoPgpDecrypt         = async (params) => { ... }   // decrypt/verif
 // __encedoPgpRequestUnlock registered by PgpSettingsView.tsx (needs React context)
 ```
 
-## Crypto architecture — two openpgp instances problem
+## Crypto architecture — single shared openpgp (since 2026-07-14)
 
-`encedo-pgp.browser.js` is a rollup bundle that embeds openpgp.js. When webpack
-(Carbonio Shell) processes this chunk, it corrupts openpgp.js internals:
-- `ZBASE32` constant → undefined (breaks WKD hash)
-- `PacketList.fromBinary` → undefined (breaks message parsing)
+`encedo-pgp.browser.js` no longer embeds openpgp — encedo-pgp-js marks `openpgp` as a
+rollup `external`, so the bundle emits `import … from 'openpgp'` and webpack resolves it
+to **the same** openpgp instance `app.tsx` imports. One instance, so the old corruption
+(`ZBASE32` / `PacketList.fromBinary` → undefined, caused by webpack re-processing an
+*embedded* openpgp) is gone.
 
-**Solution**: use webpack-bundled `openpgp` (direct npm dep) for all high-level API calls.
-Only use rollup bundle for pure-byte HSM operations:
-- `buildHsmSignaturePkt` — constructs Ed25519 OpenPGP sig packet from HSM bytes
-- `signCleartextMessage` — builds `-----BEGIN PGP SIGNED MESSAGE-----`
-- `buildCertificate` — builds OpenPGP v4 cert from HSM public keys
+Consequence: app.tsx can and does call the library's high-level functions directly —
+e.g. `readValidatedWkdKey` for WKD key validation. There is no longer a reason to
+reimplement openpgp logic locally to dodge the corrupted bundle. Keep using the library
+for shared crypto so our patches (minimal MPI encoding, WKD validation, …) apply here too.
 
-All decrypt crypto (SHA-256 KDF, AES-KW unwrap) runs via `window.crypto.subtle` directly
-in `app.tsx` — NOT through the rollup bundle.
+Still true: the pure-byte HSM helpers (`buildHsmSignaturePkt`, `signCleartextMessage`,
+`buildCertificate`, `hsmDecryptPkesk`) use no openpgp API; app.tsx's HSM ECDH decrypt runs
+via `window.crypto.subtle` directly. The multi-key HSM decrypt orchestration in app.tsx is
+bespoke (RFC 3156 MIME, recipientEmail filtering) and stays local.
+
+**Do NOT re-embed openpgp** in the rollup build to "make it standalone" — that reintroduces
+the two-instance corruption. pgp-test.html supplies openpgp via an import map instead.
 
 ## Token management
 
