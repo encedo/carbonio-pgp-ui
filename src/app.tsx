@@ -98,11 +98,26 @@ async function getPgp() {
   return import('../../encedo-pgp-js/dist/encedo-pgp.browser.js');
 }
 
-/** Fetch WKD key and return parsed openpgp.PublicKey (uses webpack openpgp). */
-async function wkdReadKey(email: string) {
+/**
+ * Fetch a WKD key and validate it for `email` using the library's
+ * readValidatedWkdKey. Since encedo-pgp.browser.js now imports openpgp as an
+ * external (the single shared instance), the returned key is a normal
+ * openpgp.PublicKey usable directly with openpgp.encrypt/verify here.
+ */
+async function readValidatedWkdKey(
+  keyBytes: Uint8Array,
+  email: string,
+  opts: { requireEncryptionKey?: boolean } = {}
+): Promise<openpgp.PublicKey> {
+  const { readValidatedWkdKey: validate } = await getPgp();
+  return validate(keyBytes, email, opts) as Promise<openpgp.PublicKey>;
+}
+
+/** Fetch and validate a recipient's WKD key. */
+async function wkdReadKey(email: string): Promise<openpgp.PublicKey> {
   const keyBytes = await wkdFetch(email);
   if (!keyBytes) throw new Error(`No WKD key found for ${email}`);
-  return openpgp.readKey({ binaryKey: keyBytes });
+  return readValidatedWkdKey(keyBytes, email);
 }
 
 // ── Window globals — consumed by carbonio-mails-ui ────────────────────────────
@@ -340,8 +355,14 @@ type PgpDecryptResult = {
     const senderKeyBytes = await wkdFetch(params.senderEmail);
     if (!senderKeyBytes) return { html: `<pre>${params.armored}</pre>`, signerEmail: params.senderEmail, sigValid: null };
 
-    const senderPubKey = await openpgp.readKey({ binaryKey: senderKeyBytes });
     const cleartextMsg = await openpgp.readCleartextMessage({ cleartextMessage: params.armored });
+    // Only trust the signature if the sender's WKD key actually claims that address.
+    let senderPubKey: openpgp.PublicKey | null = null;
+    try { senderPubKey = await readValidatedWkdKey(senderKeyBytes, params.senderEmail, { requireEncryptionKey: false }); }
+    catch { senderPubKey = null; }
+    if (!senderPubKey) {
+      return { html: `<pre style="white-space:pre-wrap">${cleartextMsg.getText().replace(/</g, '&lt;')}</pre>`, signerEmail: params.senderEmail, sigValid: null };
+    }
     const result = await openpgp.verify({ message: cleartextMsg, verificationKeys: [senderPubKey] });
     const sig = result.signatures[0];
     let sigValid: boolean | null = null;
@@ -442,7 +463,12 @@ type PgpDecryptResult = {
 
   if (signerEmail) {
     const senderKeyBytes = await wkdFetch(signerEmail);
-    const verificationKeys = senderKeyBytes ? [await openpgp.readKey({ binaryKey: senderKeyBytes })] : [];
+    // Validate the sender key claims this address before trusting a "signature valid" badge.
+    let verificationKeys: openpgp.PublicKey[] = [];
+    if (senderKeyBytes) {
+      try { verificationKeys = [await readValidatedWkdKey(senderKeyBytes, signerEmail, { requireEncryptionKey: false })]; }
+      catch { verificationKeys = []; }
+    }
     const decrypted = await openpgp.decrypt({ message, sessionKeys: [sessionKey], verificationKeys });
     plaintext = decrypted.data as string;
     if (verificationKeys.length) {
