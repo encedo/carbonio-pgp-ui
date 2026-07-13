@@ -135,26 +135,23 @@ sudo -u zextras /opt/zextras/bin/zmprov gcf carbonioReverseProxyResponseCSPHeade
 `https:` in `connect-src` is what allows the browser to talk to the HSM, which may sit at
 any address on the user's local network.
 
-### 2. CORS on the HSM
+### 2. CORS — served by the HSM itself
 
-The HSM is a different origin than the webmail, and usually a *private* address reached from
-a *public* one, so both plain CORS and Private Network Access (PNA) are in play.
+The browser talks to the HEM device directly, so the HSM's own HTTP API (firmware) is what
+has to answer the cross-origin checks — there is nothing to configure on the Carbonio side
+for this. Two headers matter:
 
-```nginx
-add_header Access-Control-Allow-Origin      $http_origin  always;
-add_header Cross-Origin-Resource-Policy     cross-origin  always;
-```
+| Header | Why |
+|--------|-----|
+| `Access-Control-Allow-Origin` | without it the browser refuses to read `GET /api/system/version` and the module reports the HSM as unreachable |
+| `Cross-Origin-Resource-Policy: cross-origin` | allows the response to be consumed from another origin |
 
-Without `Access-Control-Allow-Origin` the browser refuses to read
-`GET /api/system/version` and the module reports the HSM as unreachable.
-
-**Private Network Access — not covered yet.** A public origin reaching a private address
-makes the browser send a PNA preflight expecting
+**Private Network Access — pending firmware.** The webmail is a public origin reaching a
+private address, so the browser sends a PNA preflight and expects
 `Access-Control-Allow-Private-Network: true` on the `OPTIONS` response. Current HEM firmware
-does not emit that header; **support is planned for the next firmware release**. Until then
-Chrome and Firefox only warn in the console, but once they start enforcing PNA the HSM will
-become unreachable from the webmail on an un-upgraded device — this is the blocker to track,
-not an nginx setting we can add on the Carbonio side.
+does not emit it; **support lands in the next firmware release**. Until then Chrome and
+Firefox only warn in the console, but once they enforce PNA an un-upgraded device will stop
+being reachable from the webmail. This is a firmware dependency, not a deployment step.
 
 ### 3. Deploy
 
