@@ -1,7 +1,10 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Button, Checkbox, Icon, Input, Spinner, Text } from '@zextras/carbonio-design-system';
+// @ts-expect-error — carbonio-shell-ui types incomplete but this hook exists at runtime
+import { useUserAccount } from '@zextras/carbonio-shell-ui';
 import { decodeDescr, useHsm, DESCR_PREFIX, DESCR, encodeDescr } from '../store/HsmContext';
 import { patchWebCrypto } from '../lib/webcrypto-patch';
+import { getDisplayNameForEmail } from '../lib/account-identity';
 import { getPgpPrefs, setPgpPref, PgpPrefs } from '../lib/pgp-prefs';
 import { wkdLookupParse } from '../lib/wkd-fetch';
 import { HsmUrlModal } from '../components/HsmUrlModal';
@@ -182,6 +185,7 @@ function shortKid(kid: string): string {
 
 function PgpSettingsInner() {
   const { url, hem, listToken, connected, unlocked, disconnect, authorize } = useHsm();
+  const account = useUserAccount();
 
   const [urlModalOpen, setUrlModalOpen] = useState(false);
   const [pwModalOpen,  setPwModalOpen]  = useState(false);
@@ -355,6 +359,7 @@ function PgpSettingsInner() {
       const { buildCertificate, publishKey } = await import('../../../encedo-pgp-js/dist/encedo-pgp.browser.js');
       const { cert } = await buildCertificate(hem, useToken, kp.kidSign, kp.kidEcdh, kp.email, {
         ecdhToken: useEcdhToken, timestamp: kp.iat, expiryTimestamp: kp.exp,
+        displayName: getDisplayNameForEmail(kp.email, account),
       });
       await publishKey(wkdBase, kp.email, cert, authToken);
       setWkdStatuses(prev => { const next = new Map(prev); next.set(kp.email, 'published'); return next; });
@@ -404,6 +409,7 @@ function PgpSettingsInner() {
       const { buildCertificate, publishKey } = await import('../../../encedo-pgp-js/dist/encedo-pgp.browser.js');
       const { cert } = await buildCertificate(hem, useToken, kidSign, kidEcdh, rotateTarget.email, {
         ecdhToken: useEcdhToken, timestamp: iat, expiryTimestamp: exp,
+        displayName: getDisplayNameForEmail(rotateTarget.email, account),
       });
       await publishKey(wkdBase, rotateTarget.email, cert, authToken);
       setRotateTarget(null);

@@ -3,6 +3,7 @@ import { Button, Text } from '@zextras/carbonio-design-system';
 import { ModalDialog } from './ModalDialog';
 // @ts-expect-error — carbonio-shell-ui types incomplete but these hooks exist at runtime
 import { useUserAccount, useUserSettings } from '@zextras/carbonio-shell-ui';
+import { getDisplayNameForEmail } from '../lib/account-identity';
 import { useHsm, DESCR, encodeDescr } from '../store/HsmContext';
 import { patchWebCrypto } from '../lib/webcrypto-patch';
 
@@ -192,7 +193,7 @@ export function KeygenModal({ open, onClose, onGenerated, onPublished, disabledE
       const { buildCertificate } = await import('../../../encedo-pgp-js/dist/encedo-pgp.browser.js');
       const { cert } = await buildCertificate(
         hem, useToken, kidSign, kidEcdh, email,
-        { ecdhToken: useEcdhToken, timestamp: iat, expiryTimestamp: exp },
+        { ecdhToken: useEcdhToken, timestamp: iat, expiryTimestamp: exp, displayName: getDisplayNameForEmail(email, account) },
       );
 
       setGenerated({ kidSign, kidEcdh, email, cert });
