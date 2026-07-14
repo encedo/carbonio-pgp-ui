@@ -10,6 +10,15 @@
 // resolve.fallback maps those modules to false (empty stubs).
 
 const webpack = require('webpack');
+const path = require('path');
+
+// Absolute path to openpgp's prebuilt browser ESM bundle. openpgp's package
+// "exports" does not expose ./dist/* subpaths, so resolve the package main
+// (dist/node/openpgp.min.cjs) and walk to the sibling browser build.
+const OPENPGP_BROWSER_BUILD = path.resolve(
+  path.dirname(require.resolve('openpgp')),
+  '../openpgp.min.mjs',
+);
 
 module.exports = function (config /*, pkg, options, mode */) {
   // Strip 'node:' prefix so webpack can apply resolve.fallback rules
@@ -29,6 +38,18 @@ module.exports = function (config /*, pkg, options, mode */) {
     url:   false,
     net:   false,
     tls:   false,
+  };
+
+  // Force openpgp's PREBUILT BROWSER bundle. openpgp@6's package exports resolve
+  // the "import" condition to dist/node/openpgp.mjs (built for Node); bundled for
+  // the browser, its EdDSA verification throws "Unknown curve" (decrypt/readKey
+  // still work, so it's easy to miss). dist/openpgp.min.mjs is the same build the
+  // standalone tester loads and verifies signatures correctly. The `$` makes this
+  // an exact match for bare `openpgp` imports (both app.tsx and the encedo-pgp
+  // bundle), so there is still a single shared, working instance.
+  config.resolve.alias = {
+    ...(config.resolve.alias ?? {}),
+    openpgp$: OPENPGP_BROWSER_BUILD,
   };
 
   return config;
