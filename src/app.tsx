@@ -175,11 +175,18 @@ function requireSecret(provided: unknown): void {
   }
 };
 
+export type PgpAttachment = {
+  filename: string;
+  contentType: string;
+  base64: string; // raw base64 (no line wrapping)
+};
+
 export type PgpSendParams = {
   senderEmail: string;
   recipientEmails: string[];
   plainText: string;
   richText: string;
+  attachments?: PgpAttachment[]; // encrypted inside the message (encrypt+sign path)
 };
 
 /**
@@ -240,23 +247,54 @@ export type PgpSendParams = {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const keyId8: Uint8Array = (senderPubKey.keyPacket.getKeyID() as any).write();
 
-  // Inner MIME payload to encrypt
-  const boundary = Array.from(crypto.getRandomValues(new Uint8Array(12)))
+  // Inner MIME payload to encrypt. The whole thing (body + any attachments) is
+  // encrypted as one opaque blob, so attachments never leave in clear and are
+  // unaffected by the server re-serialising the outer multipart/encrypted.
+  const randomBoundary = (): string => Array.from(crypto.getRandomValues(new Uint8Array(12)))
     .map(b => b.toString(16).padStart(2, '0')).join('');
-  const innerMime = [
-    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+
+  const altBoundary = randomBoundary();
+  const altPart = [
+    `Content-Type: multipart/alternative; boundary="${altBoundary}"`,
     '',
-    `--${boundary}`,
+    `--${altBoundary}`,
     'Content-Type: text/plain; charset=utf-8',
     '',
     params.plainText,
-    `--${boundary}`,
+    `--${altBoundary}`,
     'Content-Type: text/html; charset=utf-8',
     '',
     params.richText,
-    `--${boundary}--`,
+    `--${altBoundary}--`,
     '',
   ].join('\r\n');
+
+  let innerMime: string;
+  const attachments = params.attachments ?? [];
+  if (attachments.length === 0) {
+    innerMime = altPart;
+  } else {
+    const mixedBoundary = randomBoundary();
+    const sanitizeName = (n: string): string => n.replace(/["\r\n]/g, '_');
+    const wrap76 = (b64: string): string => (b64.replace(/\s/g, '').match(/.{1,76}/g) ?? []).join('\r\n');
+    const attachmentParts = attachments.map((a) => [
+      `--${mixedBoundary}`,
+      `Content-Type: ${a.contentType || 'application/octet-stream'}; name="${sanitizeName(a.filename)}"`,
+      'Content-Transfer-Encoding: base64',
+      `Content-Disposition: attachment; filename="${sanitizeName(a.filename)}"`,
+      '',
+      wrap76(a.base64),
+    ].join('\r\n'));
+    innerMime = [
+      `Content-Type: multipart/mixed; boundary="${mixedBoundary}"`,
+      '',
+      `--${mixedBoundary}`,
+      altPart,
+      ...attachmentParts,
+      `--${mixedBoundary}--`,
+      '',
+    ].join('\r\n');
+  }
 
 
   // Build HSM signature packet (pure HSM, no openpgp.js inside rollup bundle)
