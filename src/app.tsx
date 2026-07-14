@@ -98,6 +98,21 @@ async function getPgp() {
   return import('../../encedo-pgp-js/dist/encedo-pgp.browser.js');
 }
 
+// Full-debug logging for the PGP decrypt/verify flow. Flip PGP_DEBUG to false for a
+// production build (or set window.__encedoPgpDebug = false before load to silence at
+// runtime). All lines are prefixed [pgp] in the browser console.
+const PGP_DEBUG = ((): boolean => {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const w = window as any;
+    return w.__encedoPgpDebug !== undefined ? !!w.__encedoPgpDebug : true;
+  } catch { return true; }
+})();
+function dlog(...args: unknown[]): void {
+  // eslint-disable-next-line no-console
+  if (PGP_DEBUG) console.log('[pgp]', ...args);
+}
+
 /**
  * Fetch a WKD key and validate it for `email` using the library's
  * readValidatedWkdKey. Since encedo-pgp.browser.js now imports openpgp as an
@@ -347,26 +362,30 @@ type PgpDecryptResult = {
 (window as any).__encedoPgpDecrypt = async (params: PgpDecryptParams, callSecret?: unknown): Promise<PgpDecryptResult> => {
   requireSecret(callSecret);
   const { hem, listToken } = _singleton.state;
+  dlog('decrypt: mode=', params.mode, '| sender=', params.senderEmail, '| recipient=', params.recipientEmail,
+    '| armored bytes=', params.armored?.length, '| hsm connected=', !!hem);
 
   if (params.mode === 'sign') {
     // Inline cleartext — verify only, no HSM needed
-    if (!params.senderEmail) return { html: `<pre>${params.armored}</pre>`, signerEmail: null, sigValid: null };
+    if (!params.senderEmail) { dlog('sign: no senderEmail → cannot verify'); return { html: `<pre>${params.armored}</pre>`, signerEmail: null, sigValid: null }; }
 
     const senderKeyBytes = await wkdFetch(params.senderEmail);
+    dlog('sign: wkdFetch(', params.senderEmail, ') →', senderKeyBytes ? `${senderKeyBytes.length} bytes` : 'null (not found / blocked)');
     if (!senderKeyBytes) return { html: `<pre>${params.armored}</pre>`, signerEmail: params.senderEmail, sigValid: null };
 
     const cleartextMsg = await openpgp.readCleartextMessage({ cleartextMessage: params.armored });
     // Only trust the signature if the sender's WKD key actually claims that address.
     let senderPubKey: openpgp.PublicKey | null = null;
-    try { senderPubKey = await readValidatedWkdKey(senderKeyBytes, params.senderEmail, { requireEncryptionKey: false }); }
-    catch { senderPubKey = null; }
+    try { senderPubKey = await readValidatedWkdKey(senderKeyBytes, params.senderEmail, { requireEncryptionKey: false }); dlog('sign: sender key validated, keyID=', senderPubKey.getKeyID().toHex()); }
+    catch (e) { senderPubKey = null; dlog('sign: sender key REJECTED by validation:', e instanceof Error ? e.message : e); }
     if (!senderPubKey) {
       return { html: `<pre style="white-space:pre-wrap">${cleartextMsg.getText().replace(/</g, '&lt;')}</pre>`, signerEmail: params.senderEmail, sigValid: null };
     }
     const result = await openpgp.verify({ message: cleartextMsg, verificationKeys: [senderPubKey] });
     const sig = result.signatures[0];
     let sigValid: boolean | null = null;
-    try { sigValid = sig ? await sig.verified : null; } catch { sigValid = false; }
+    try { sigValid = sig ? await sig.verified : null; dlog('sign: signature verified =', sigValid); }
+    catch (e) { sigValid = false; dlog('sign: signature verify FAILED:', e instanceof Error ? e.message : e, '| sig keyID=', (sig?.keyID as any)?.toHex?.()); }
     const text = result.data as string;
     return { html: `<pre style="white-space:pre-wrap">${text.replace(/</g, '&lt;')}</pre>`, signerEmail: params.senderEmail, sigValid };
   }
@@ -378,6 +397,9 @@ type PgpDecryptResult = {
   // Find ALL own ECDH keys (user may have keys for multiple email addresses)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const selfEcdhKeys = allKeys.filter((k: any) => { const d = decodeDescr(k); return d?.role === 'self' && d?.keyType === 'ecdh'; });
+  dlog('encrypt: HSM keys total=', allKeys.length, '| self ECDH keys=', selfEcdhKeys.length,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    '→', selfEcdhKeys.map((k: any) => decodeDescr(k)?.email));
   if (!selfEcdhKeys.length) throw new Error('No ECDH key found in HSM');
 
   // Build email → candidate map from DESCR (no WKD needed — fingerprints resolved lazily via cache)
@@ -411,6 +433,9 @@ type PgpDecryptResult = {
   const message = await openpgp.readMessage({ armoredMessage: params.armored });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const pkeskPackets = (message.packets as any).filterByTag(openpgp.enums.packet.publicKeyEncryptedSessionKey);
+  dlog('encrypt: PKESK packets=', pkeskPackets.length,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    '| recipient keyIDs=', pkeskPackets.map((p: any) => p.publicKeyID?.toHex?.()));
   if (!pkeskPackets.length) throw new Error('No PKESK packet found');
 
   // If recipientEmail known: direct lookup (O(1), single cache hit).
@@ -418,6 +443,7 @@ type PgpDecryptResult = {
   const candidatesToTry: EcdhCandidate[] = params.recipientEmail
     ? [ecdhByEmail.get(params.recipientEmail)].filter((c): c is EcdhCandidate => !!c)
     : [...ecdhByEmail.values()];
+  dlog('encrypt: candidate ECDH keys to try=', candidatesToTry.map(c => c.email));
 
   let sessionKey: openpgp.SessionKey | null = null;
   let lastErr: unknown = null;
@@ -444,12 +470,14 @@ type PgpDecryptResult = {
     }
     for (const candidate of candidatesToTry) {
       const fingerprint = await getEcdhFingerprint(candidate.email);
-      if (!fingerprint) continue;
+      if (!fingerprint) { dlog('encrypt: no WKD fingerprint for', candidate.email, '→ skip'); continue; }
       try {
         sessionKey = await localDecryptPkesk(ephemeral, wrapped, fingerprint, algoId, hem, candidate.token, candidate.kid);
+        dlog('encrypt: session key obtained via ECDH with', candidate.email, '| algoId=', algoId);
         break;
       } catch (e) {
         lastErr = e;
+        dlog('encrypt: ECDH decrypt with', candidate.email, 'failed:', e instanceof Error ? e.message : e);
       }
     }
     if (sessionKey) break;
@@ -463,6 +491,7 @@ type PgpDecryptResult = {
 
   if (signerEmail) {
     const senderKeyBytes = await wkdFetch(signerEmail);
+    dlog('verify: wkdFetch(', signerEmail, ') →', senderKeyBytes ? `${senderKeyBytes.length} bytes` : 'null (not found / CSP-blocked)');
     // Validate the sender key claims this address before trusting a "signature valid" badge.
     let verificationKeys: openpgp.PublicKey[] = [];
     if (!senderKeyBytes) {
@@ -470,7 +499,10 @@ type PgpDecryptResult = {
       console.warn('[pgp] verify: could not fetch sender WKD key for', signerEmail, '— signature cannot be verified (shown as unverified, not invalid)');
     } else {
       try {
-        verificationKeys = [await readValidatedWkdKey(senderKeyBytes, signerEmail, { requireEncryptionKey: false })];
+        const vk = await readValidatedWkdKey(senderKeyBytes, signerEmail, { requireEncryptionKey: false });
+        verificationKeys = [vk];
+        dlog('verify: sender key validated | primary keyID=', vk.getKeyID().toHex(),
+          '| subkey IDs=', vk.getSubkeys().map(s => s.getKeyID().toHex()));
       } catch (e) {
         // eslint-disable-next-line no-console
         console.warn('[pgp] verify: sender WKD key failed validation:', e instanceof Error ? e.message : e);
@@ -478,6 +510,7 @@ type PgpDecryptResult = {
     }
     const decrypted = await openpgp.decrypt({ message, sessionKeys: [sessionKey], verificationKeys });
     plaintext = decrypted.data as string;
+    dlog('verify: decrypted OK | plaintext bytes=', plaintext.length, '| signatures in message=', decrypted.signatures.length, '| verificationKeys=', verificationKeys.length);
     if (verificationKeys.length) {
       const sig = decrypted.signatures[0];
       if (!sig) {
@@ -488,6 +521,7 @@ type PgpDecryptResult = {
         try {
           await sig.verified;
           sigValid = true;
+          dlog('verify: SIGNATURE VALID ✓ | keyID=', (sig.keyID as any)?.toHex?.());
         } catch (e) {
           sigValid = false;
           // eslint-disable-next-line no-console
