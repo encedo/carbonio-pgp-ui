@@ -160,6 +160,21 @@ function requireSecret(provided: unknown): void {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (window as any).__encedoPgpCheckWkd = (email: string) => wkdFetch(email).then(r => r !== null);
 
+// Navigate the Carbonio SPA to the PGP section (this module's primary-bar route).
+// Used by mails-ui when a Decrypt is attempted before the HSM is connected and the
+// in-place unlock modal isn't available (the PGP view isn't mounted after a reload).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(window as any).__encedoPgpOpenSettings = (): void => {
+  // Primary-bar apps live at /<shellBase>/<route>; take the first path segment as base.
+  const base = window.location.pathname.split('/').filter(Boolean)[0] ?? 'carbonio';
+  const url = `/${base}/pgp`;
+  if (window.location.pathname !== url) {
+    window.history.pushState({}, '', url);
+    // Nudge react-router (used by the shell) to react to the URL change without a reload.
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  }
+};
+
 export type PgpSendParams = {
   senderEmail: string;
   recipientEmails: string[];
