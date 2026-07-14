@@ -465,15 +465,38 @@ type PgpDecryptResult = {
     const senderKeyBytes = await wkdFetch(signerEmail);
     // Validate the sender key claims this address before trusting a "signature valid" badge.
     let verificationKeys: openpgp.PublicKey[] = [];
-    if (senderKeyBytes) {
-      try { verificationKeys = [await readValidatedWkdKey(senderKeyBytes, signerEmail, { requireEncryptionKey: false })]; }
-      catch { verificationKeys = []; }
+    if (!senderKeyBytes) {
+      // eslint-disable-next-line no-console
+      console.warn('[pgp] verify: could not fetch sender WKD key for', signerEmail, '— signature cannot be verified (shown as unverified, not invalid)');
+    } else {
+      try {
+        verificationKeys = [await readValidatedWkdKey(senderKeyBytes, signerEmail, { requireEncryptionKey: false })];
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn('[pgp] verify: sender WKD key failed validation:', e instanceof Error ? e.message : e);
+      }
     }
     const decrypted = await openpgp.decrypt({ message, sessionKeys: [sessionKey], verificationKeys });
     plaintext = decrypted.data as string;
     if (verificationKeys.length) {
       const sig = decrypted.signatures[0];
-      try { sigValid = sig ? await sig.verified : null; } catch { sigValid = false; }
+      if (!sig) {
+        sigValid = null;
+        // eslint-disable-next-line no-console
+        console.warn('[pgp] verify: no signature packet in decrypted message');
+      } else {
+        try {
+          await sig.verified;
+          sigValid = true;
+        } catch (e) {
+          sigValid = false;
+          // eslint-disable-next-line no-console
+          console.warn('[pgp] verify FAILED:', e instanceof Error ? e.message : e,
+            '| signature keyID:', (sig.keyID as any)?.toHex?.(),
+            '| fetched sender key IDs:', verificationKeys.map(k => k.getKeyID().toHex()),
+            '| sender subkey IDs:', verificationKeys.flatMap(k => k.getSubkeys().map(s => s.getKeyID().toHex())));
+        }
+      }
     }
   } else {
     const decrypted = await openpgp.decrypt({ message, sessionKeys: [sessionKey] });
