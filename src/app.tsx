@@ -284,11 +284,18 @@ export type PgpSendParams = {
 /**
  * Extract displayable HTML from a decrypted MIME plaintext.
  * Handles nested multipart, base64 and quoted-printable transfer encodings.
- * Prefers text/html; falls back to text/plain.
+ * Prefers text/html; falls back to text/plain. Inline images (cid:) are embedded
+ * as data: URIs and attachments are appended as download links.
  */
 function extractHtmlFromMime(plaintext: string): string {
-  // Split into MIME parts — walk recursively, collect text/html and text/plain leaves
-  interface MimePart { ct: string; cte: string; body: string }
+  interface MimePart {
+    ct: string;          // content-type (lowercased, no params)
+    cte: string;         // content-transfer-encoding
+    body: string;        // raw (undecoded) body
+    cid: string | null;  // Content-ID without <> (inline image reference)
+    disposition: string; // 'inline' | 'attachment' | ''
+    filename: string | null;
+  }
 
   const MIME_MAX_DEPTH = 8;
   function parseParts(text: string, depth = 0): MimePart[] {
@@ -302,6 +309,12 @@ function extractHtmlFromMime(plaintext: string): string {
     const ct = ctMatch ? ctMatch[1].toLowerCase() : '';
     const cteMatch = headerBlock.match(/^content-transfer-encoding:\s*(\S+)/im);
     const cte = cteMatch ? cteMatch[1].toLowerCase() : '7bit';
+    const cidMatch = headerBlock.match(/^content-id:\s*<?([^>\r\n]+)>?/im);
+    const cid = cidMatch ? cidMatch[1].trim() : null;
+    const cdMatch = headerBlock.match(/^content-disposition:\s*([^\s;]+)/im);
+    const disposition = cdMatch ? cdMatch[1].toLowerCase() : '';
+    const nameMatch = headerBlock.match(/(?:filename|name)="?([^";\r\n]+)"?/i);
+    const filename = nameMatch ? nameMatch[1].trim() : null;
 
     if (ct.startsWith('multipart/')) {
       const boundaryMatch = headerBlock.match(/boundary="?([^";\r\n]+)"?/i);
@@ -320,10 +333,10 @@ function extractHtmlFromMime(plaintext: string): string {
       }
       return parts;
     }
-    return [{ ct, cte, body }];
+    return [{ ct, cte, body, cid, disposition, filename }];
   }
 
-  function decodeBody(part: MimePart): string {
+  function decodeText(part: MimePart): string {
     if (part.cte === 'base64') {
       try {
         const binary = atob(part.body.replace(/\s/g, ''));
@@ -349,13 +362,63 @@ function extractHtmlFromMime(plaintext: string): string {
     return part.body;
   }
 
+  /** Base64 payload of a part, suitable for a data: URI. */
+  function base64Payload(part: MimePart): string {
+    if (part.cte === 'base64') return part.body.replace(/\s/g, '');
+    // Re-encode other transfer encodings to base64.
+    const decoded = decodeText(part);
+    try { return btoa(unescape(encodeURIComponent(decoded))); }
+    catch { return btoa(decoded); }
+  }
+
+  function escapeHtml(s: string): string {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
   const parts = parseParts(plaintext);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  dlog('mime: parts=', parts.map(p => ({ ct: p.ct, cte: p.cte, cid: p.cid, disp: p.disposition, file: p.filename })) as any);
+
+  // Inline images referenced by cid: → data: URI map.
+  const cidMap = new Map<string, string>();
+  for (const p of parts) {
+    if (p.cid && p.ct.startsWith('image/')) {
+      cidMap.set(p.cid, `data:${p.ct};base64,${base64Payload(p)}`);
+    }
+  }
+
+  // Attachments: explicit attachments, or named non-body parts that aren't inline images.
+  const attachments = parts.filter(p =>
+    (p.disposition === 'attachment' || (p.filename && !p.cid)) &&
+    p.ct !== 'text/html' && p.ct !== 'text/plain' && !p.ct.startsWith('multipart/')
+  );
+
+  const attachmentsHtml = attachments.length
+    ? `<div style="margin-top:12px;padding-top:10px;border-top:1px solid #e2e8f0">
+         <div style="font-size:12px;font-weight:600;color:#718096;margin-bottom:6px">📎 Attachments (${attachments.length})</div>
+         ${attachments.map(a => {
+           const name = a.filename || `attachment.${(a.ct.split('/')[1] || 'bin')}`;
+           const href = `data:${a.ct};base64,${base64Payload(a)}`;
+           return `<div><a href="${href}" download="${escapeHtml(name)}" style="color:#2b6cb0;font-size:13px;text-decoration:none">⬇ ${escapeHtml(name)}</a> <span style="color:#a0aec0;font-size:12px">(${a.ct})</span></div>`;
+         }).join('')}
+       </div>`
+    : '';
+
   const htmlPart = parts.find(p => p.ct === 'text/html');
-  if (htmlPart) return decodeBody(htmlPart);
+  if (htmlPart) {
+    let html = decodeText(htmlPart);
+    // Embed inline images: rewrite cid: references to data: URIs.
+    for (const [cid, dataUri] of cidMap) {
+      html = html.replace(new RegExp(`cid:${cid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'g'), dataUri);
+    }
+    return html + attachmentsHtml;
+  }
   const textPart = parts.find(p => p.ct === 'text/plain');
-  if (textPart) return `<pre style="white-space:pre-wrap">${decodeBody(textPart).replace(/</g, '&lt;')}</pre>`;
-  // Fallback: show raw
-  return `<pre style="white-space:pre-wrap">${plaintext.replace(/</g, '&lt;')}</pre>`;
+  if (textPart) {
+    return `<pre style="white-space:pre-wrap">${escapeHtml(decodeText(textPart))}</pre>${attachmentsHtml}`;
+  }
+  // Fallback: show raw (still surface any attachments we found).
+  return `<pre style="white-space:pre-wrap">${escapeHtml(plaintext)}</pre>${attachmentsHtml}`;
 }
 
 // ── Decrypt window global ─────────────────────────────────────────────────────
