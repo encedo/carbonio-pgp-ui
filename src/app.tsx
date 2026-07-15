@@ -335,6 +335,11 @@ export type PgpSendParams = {
   return openpgp.encrypt({
     message: signedMsg,
     encryptionKeys,
+    // Use a key ID of 0 for every recipient PKESK (throw-keyids), so no recipient — To,
+    // CC or BCC — is revealed in the message metadata. BCC stays hidden even in a single
+    // encrypted copy. Our decrypt probes every PKESK with the candidate ECDH keys anyway
+    // (it never matches on the PKESK key ID), so this doesn't affect decryption.
+    wildcard: true,
     config: { preferredCompressionAlgorithm: openpgp.enums.compression.uncompressed },
   });
 };
