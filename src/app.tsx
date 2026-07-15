@@ -296,6 +296,8 @@ export type PgpSendParams = {
     ].join('\r\n');
   }
 
+  dlog('encrypt: attachments=', attachments.length, '| inner MIME bytes=', innerMime.length,
+    '| structure=', attachments.length ? 'multipart/mixed' : 'multipart/alternative');
 
   // Build HSM signature packet (pure HSM, no openpgp.js inside rollup bundle)
   const { sigPkt, dataBytes } = await buildHsmSignaturePkt(hem, signToken, selfSignKey.kid, keyId8, innerMime);
