@@ -30,9 +30,32 @@ function zbase32(bytes: Uint8Array): string {
 
 // ── WKD fetch ────────────────────────────────────────────────────────────────
 
+// Per-session cache of WKD key bytes, keyed by lower-cased email. WKD keys are
+// stable within a session, so this avoids re-fetching a recipient's (or our own)
+// key on every send/decrypt. Primed for our own addresses at unlock and cleared
+// when HSM keys change (see clearWkdCache / primeWkdCache).
+const wkdKeyCache = new Map<string, Uint8Array>();
+
+/** Drop all cached WKD keys — call after any HSM key change (keygen/import/delete/rotate/publish). */
+export function clearWkdCache(): void {
+  wkdKeyCache.clear();
+}
+
+/** Fetch (and cache) WKD keys for the given addresses — used to warm the cache at unlock. */
+export function primeWkdCache(emails: Iterable<string>): void {
+  for (const email of emails) {
+    // Fire-and-forget; wkdFetch populates the cache on success.
+    void wkdFetch(email);
+  }
+}
+
 export async function wkdFetch(email: string): Promise<Uint8Array | null> {
   const atIdx = email.indexOf('@');
   if (atIdx < 0) return null;
+  const key = email.toLowerCase();
+  const cached = wkdKeyCache.get(key);
+  if (cached) return cached;
+
   const local  = email.slice(0, atIdx);
   const domain = email.slice(atIdx + 1);
   const hash   = zbase32(await sha1(new TextEncoder().encode(local.toLowerCase())));
@@ -42,14 +65,14 @@ export async function wkdFetch(email: string): Promise<Uint8Array | null> {
   try {
     const url = `https://openpgpkey.${domain}/.well-known/openpgpkey/${domain}/hu/${hash}?l=${lEnc}`;
     const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
-    if (res.ok) return new Uint8Array(await res.arrayBuffer());
+    if (res.ok) { const b = new Uint8Array(await res.arrayBuffer()); wkdKeyCache.set(key, b); return b; }
   } catch { /* fall through */ }
 
   // Direct method
   try {
     const url = `https://${domain}/.well-known/openpgpkey/hu/${hash}?l=${lEnc}`;
     const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
-    if (res.ok) return new Uint8Array(await res.arrayBuffer());
+    if (res.ok) { const b = new Uint8Array(await res.arrayBuffer()); wkdKeyCache.set(key, b); return b; }
   } catch { /* not found */ }
 
   return null;

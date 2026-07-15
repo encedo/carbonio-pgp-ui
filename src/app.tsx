@@ -181,12 +181,16 @@ export type PgpAttachment = {
   base64: string; // raw base64 (no line wrapping)
 };
 
+// Inline image referenced from the HTML body via cid:<contentId>.
+export type PgpInlineImage = PgpAttachment & { contentId: string };
+
 export type PgpSendParams = {
   senderEmail: string;
   recipientEmails: string[];
   plainText: string;
   richText: string;
-  attachments?: PgpAttachment[]; // encrypted inside the message (encrypt+sign path)
+  attachments?: PgpAttachment[];   // encrypted inside the message (encrypt+sign path)
+  inlineImages?: PgpInlineImage[]; // cid: images embedded in a multipart/related
 };
 
 /**
@@ -269,14 +273,40 @@ export type PgpSendParams = {
     '',
   ].join('\r\n');
 
-  let innerMime: string;
   const attachments = params.attachments ?? [];
-  if (attachments.length === 0) {
-    innerMime = altPart;
-  } else {
+  const inlineImages = params.inlineImages ?? [];
+  const sanitizeName = (n: string): string => n.replace(/["\r\n]/g, '_');
+  const wrap76 = (b64: string): string => (b64.replace(/\s/g, '').match(/.{1,76}/g) ?? []).join('\r\n');
+
+  // Body wrapped in multipart/related when there are inline images, so the HTML's
+  // cid: references resolve to the embedded image parts.
+  let content = altPart;
+  if (inlineImages.length > 0) {
+    const relBoundary = randomBoundary();
+    const inlineParts = inlineImages.map((img) => [
+      `--${relBoundary}`,
+      `Content-Type: ${img.contentType || 'application/octet-stream'}; name="${sanitizeName(img.filename)}"`,
+      'Content-Transfer-Encoding: base64',
+      `Content-ID: <${img.contentId}>`,
+      `Content-Disposition: inline; filename="${sanitizeName(img.filename)}"`,
+      '',
+      wrap76(img.base64),
+    ].join('\r\n'));
+    content = [
+      `Content-Type: multipart/related; type="text/html"; boundary="${relBoundary}"`,
+      '',
+      `--${relBoundary}`,
+      altPart,
+      ...inlineParts,
+      `--${relBoundary}--`,
+      '',
+    ].join('\r\n');
+  }
+
+  // ...then wrapped in multipart/mixed when there are standard attachments.
+  let innerMime = content;
+  if (attachments.length > 0) {
     const mixedBoundary = randomBoundary();
-    const sanitizeName = (n: string): string => n.replace(/["\r\n]/g, '_');
-    const wrap76 = (b64: string): string => (b64.replace(/\s/g, '').match(/.{1,76}/g) ?? []).join('\r\n');
     const attachmentParts = attachments.map((a) => [
       `--${mixedBoundary}`,
       `Content-Type: ${a.contentType || 'application/octet-stream'}; name="${sanitizeName(a.filename)}"`,
@@ -289,15 +319,15 @@ export type PgpSendParams = {
       `Content-Type: multipart/mixed; boundary="${mixedBoundary}"`,
       '',
       `--${mixedBoundary}`,
-      altPart,
+      content,
       ...attachmentParts,
       `--${mixedBoundary}--`,
       '',
     ].join('\r\n');
   }
 
-  dlog('encrypt: attachments=', attachments.length, '| inner MIME bytes=', innerMime.length,
-    '| structure=', attachments.length ? 'multipart/mixed' : 'multipart/alternative');
+  dlog('encrypt: attachments=', attachments.length, '| inlineImages=', inlineImages.length, '| inner MIME bytes=', innerMime.length,
+    '| structure=', attachments.length ? 'multipart/mixed' : inlineImages.length ? 'multipart/related' : 'multipart/alternative');
 
   // Build HSM signature packet (pure HSM, no openpgp.js inside rollup bundle)
   const { sigPkt, dataBytes } = await buildHsmSignaturePkt(hem, signToken, selfSignKey.kid, keyId8, innerMime);

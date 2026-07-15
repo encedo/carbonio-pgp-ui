@@ -3,6 +3,7 @@ import React, { createContext, useCallback, useContext, useEffect, useState } fr
 import { useUserAccount, useUserSettings } from '@zextras/carbonio-shell-ui';
 import { HEM } from '../../../hem-sdk-js/hem-sdk.browser.js';
 import { patchWebCrypto } from '../lib/webcrypto-patch';
+import { primeWkdCache } from '../lib/wkd-fetch';
 
 // Preload encedo-pgp.browser.js as soon as we know crypto is available,
 // so openpgp.js module-level code runs while window.crypto.subtle is intact.
@@ -179,6 +180,8 @@ export function HsmProvider({ children }: { children: React.ReactNode }) {
       _singleton.state = next;
       setState(next);
       preloadEncedoPgp();
+      // Warm the WKD cache for our own addresses so the first send/decrypt is fast.
+      primeWkdCache(_singleton.userEmails);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       const next: HsmState = {

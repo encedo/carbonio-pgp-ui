@@ -6,7 +6,7 @@ import { decodeDescr, useHsm, DESCR_PREFIX, DESCR, encodeDescr } from '../store/
 import { patchWebCrypto } from '../lib/webcrypto-patch';
 import { getDisplayNameForEmail } from '../lib/account-identity';
 import { getPgpPrefs, setPgpPref, PgpPrefs } from '../lib/pgp-prefs';
-import { wkdLookupParse } from '../lib/wkd-fetch';
+import { wkdLookupParse, clearWkdCache } from '../lib/wkd-fetch';
 import { HsmUrlModal } from '../components/HsmUrlModal';
 import { HsmPasswordModal } from '../components/HsmPasswordModal';
 import { WkdImportModal } from '../components/WkdImportModal';
@@ -362,6 +362,7 @@ function PgpSettingsInner() {
         displayName: getDisplayNameForEmail(kp.email, account),
       });
       await publishKey(wkdBase, kp.email, cert, authToken);
+      clearWkdCache(); // our published key changed — drop cached WKD keys
       setWkdStatuses(prev => { const next = new Map(prev); next.set(kp.email, 'published'); return next; });
     } catch (e: unknown) {
       setPublishError(e instanceof Error ? e.message : String(e));
@@ -412,6 +413,7 @@ function PgpSettingsInner() {
         displayName: getDisplayNameForEmail(rotateTarget.email, account),
       });
       await publishKey(wkdBase, rotateTarget.email, cert, authToken);
+      clearWkdCache(); // rotated our key — drop cached WKD keys
       setRotateTarget(null);
       loadKeys();
     } catch (e: unknown) {
@@ -441,6 +443,7 @@ function PgpSettingsInner() {
       const delToken = await authorize('keymgmt:del');
       await hem.deleteKey(delToken, revokeTarget.kidSign);
       await hem.deleteKey(delToken, revokeTarget.kidEcdh);
+      clearWkdCache(); // revoked our key — drop cached WKD keys
       setRevokeTarget(null);
       loadKeys();
     } catch (e: unknown) {
@@ -792,7 +795,7 @@ function PgpSettingsInner() {
         <KeygenModal
           open={keygenModalOpen}
           onClose={() => setKeygenModalOpen(false)}
-          onGenerated={loadKeys}
+          onGenerated={() => { clearWkdCache(); loadKeys(); }}
           onPublished={(email) => setWkdStatuses(prev => { const next = new Map(prev); next.set(email, 'published'); return next; })}
           disabledEmails={selfKeys.map(k => k.email)}
         />
