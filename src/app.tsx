@@ -262,35 +262,20 @@ export type PgpSendParams = {
   const sanitizeName = (n: string): string => n.replace(/["\r\n]/g, '_');
   const wrap76 = (b64: string): string => (b64.replace(/\s/g, '').match(/.{1,76}/g) ?? []).join('\r\n');
 
-  // The HTML part. With inline images it becomes multipart/related whose ROOT is the
-  // text/html (matching what Carbonio's own composer emits), so the cid: references
-  // resolve on the recipient side (nesting related INSIDE alternative, not the reverse).
-  let htmlPart: string;
-  if (inlineImages.length > 0) {
-    const relBoundary = randomBoundary();
-    const inlineParts = inlineImages.map((img) => [
-      `--${relBoundary}`,
-      `Content-Type: ${img.contentType || 'application/octet-stream'}; name="${sanitizeName(img.filename)}"`,
-      'Content-Transfer-Encoding: base64',
-      `Content-ID: <${img.contentId}>`,
-      `Content-Disposition: inline; filename="${sanitizeName(img.filename)}"`,
-      '',
-      wrap76(img.base64),
-    ].join('\r\n'));
-    htmlPart = [
-      `Content-Type: multipart/related; type="text/html"; boundary="${relBoundary}"`,
-      '',
-      `--${relBoundary}`,
-      'Content-Type: text/html; charset=utf-8',
-      '',
-      params.richText,
-      ...inlineParts,
-      `--${relBoundary}--`,
-      '',
-    ].join('\r\n');
-  } else {
-    htmlPart = ['Content-Type: text/html; charset=utf-8', '', params.richText].join('\r\n');
+  // Inline images are embedded as data: URIs directly in the HTML (each cid: reference
+  // is replaced by the image bytes). This is the most portable option: it renders in
+  // ProtonMail/Gmail/Thunderbird with no cid resolution, which some clients fail to do
+  // for a multipart/related nested inside an encrypted blob. The whole HTML is inside
+  // the encrypted payload, so the (long) data: lines reach the recipient byte-for-byte.
+  let richHtml = params.richText;
+  let inlineEmbedded = 0;
+  for (const img of inlineImages) {
+    const dataUri = `data:${img.contentType || 'application/octet-stream'};base64,${img.base64.replace(/\s/g, '')}`;
+    const before = richHtml;
+    richHtml = richHtml.split(`cid:${img.contentId}`).join(dataUri);
+    if (richHtml !== before) inlineEmbedded += 1;
   }
+  const htmlPart = ['Content-Type: text/html; charset=utf-8', '', richHtml].join('\r\n');
 
   const altBoundary = randomBoundary();
   const content = [
@@ -329,8 +314,8 @@ export type PgpSendParams = {
     ].join('\r\n');
   }
 
-  dlog('encrypt: attachments=', attachments.length, '| inlineImages=', inlineImages.length, '| inner MIME bytes=', innerMime.length,
-    '| structure=', attachments.length ? 'multipart/mixed' : inlineImages.length ? 'multipart/related' : 'multipart/alternative');
+  dlog('encrypt: attachments=', attachments.length, '| inlineImages=', inlineImages.length, '| inlineEmbedded(data-uri)=', inlineEmbedded,
+    '| inner MIME bytes=', innerMime.length, '| structure=', attachments.length ? 'multipart/mixed' : 'multipart/alternative');
 
   // Build HSM signature packet (pure HSM, no openpgp.js inside rollup bundle)
   const { sigPkt, dataBytes } = await buildHsmSignaturePkt(hem, signToken, selfSignKey.kid, keyId8, innerMime);
