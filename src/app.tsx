@@ -556,12 +556,14 @@ type PgpDecryptResult = {
     '| recipient keyIDs=', pkeskPackets.map((p: any) => p.publicKeyID?.toHex?.()));
   if (!pkeskPackets.length) throw new Error('No PKESK packet found');
 
-  // If recipientEmail known: direct lookup (O(1), single cache hit).
-  // Otherwise: try all self ECDH keys (each fingerprint fetched once then cached).
-  const candidatesToTry: EcdhCandidate[] = params.recipientEmail
-    ? [ecdhByEmail.get(params.recipientEmail)].filter((c): c is EcdhCandidate => !!c)
-    : [...ecdhByEmail.values()];
-  dlog('encrypt: candidate ECDH keys to try=', candidatesToTry.map(c => c.email));
+  // Prefer a direct hit on recipientEmail (O(1)), but fall back to ALL self ECDH keys
+  // when it doesn't match one of ours. This is what lets us open a message in Sent:
+  // there recipientEmail is the *recipient's* address (not ours), yet the copy is also
+  // encrypted to the sender's own key (senderEmail is in emailSet), so trying all self
+  // keys finds it.
+  const direct = params.recipientEmail ? ecdhByEmail.get(params.recipientEmail) : undefined;
+  const candidatesToTry: EcdhCandidate[] = direct ? [direct] : [...ecdhByEmail.values()];
+  dlog('decrypt: recipient direct-hit=', !!direct, '| candidate ECDH keys=', candidatesToTry.map(c => c.email));
 
   let sessionKey: openpgp.SessionKey | null = null;
   let lastErr: unknown = null;
