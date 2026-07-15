@@ -257,30 +257,15 @@ export type PgpSendParams = {
   const randomBoundary = (): string => Array.from(crypto.getRandomValues(new Uint8Array(12)))
     .map(b => b.toString(16).padStart(2, '0')).join('');
 
-  const altBoundary = randomBoundary();
-  const altPart = [
-    `Content-Type: multipart/alternative; boundary="${altBoundary}"`,
-    '',
-    `--${altBoundary}`,
-    'Content-Type: text/plain; charset=utf-8',
-    '',
-    params.plainText,
-    `--${altBoundary}`,
-    'Content-Type: text/html; charset=utf-8',
-    '',
-    params.richText,
-    `--${altBoundary}--`,
-    '',
-  ].join('\r\n');
-
   const attachments = params.attachments ?? [];
   const inlineImages = params.inlineImages ?? [];
   const sanitizeName = (n: string): string => n.replace(/["\r\n]/g, '_');
   const wrap76 = (b64: string): string => (b64.replace(/\s/g, '').match(/.{1,76}/g) ?? []).join('\r\n');
 
-  // Body wrapped in multipart/related when there are inline images, so the HTML's
-  // cid: references resolve to the embedded image parts.
-  let content = altPart;
+  // The HTML part. With inline images it becomes multipart/related whose ROOT is the
+  // text/html (matching what Carbonio's own composer emits), so the cid: references
+  // resolve on the recipient side (nesting related INSIDE alternative, not the reverse).
+  let htmlPart: string;
   if (inlineImages.length > 0) {
     const relBoundary = randomBoundary();
     const inlineParts = inlineImages.map((img) => [
@@ -292,16 +277,34 @@ export type PgpSendParams = {
       '',
       wrap76(img.base64),
     ].join('\r\n'));
-    content = [
+    htmlPart = [
       `Content-Type: multipart/related; type="text/html"; boundary="${relBoundary}"`,
       '',
       `--${relBoundary}`,
-      altPart,
+      'Content-Type: text/html; charset=utf-8',
+      '',
+      params.richText,
       ...inlineParts,
       `--${relBoundary}--`,
       '',
     ].join('\r\n');
+  } else {
+    htmlPart = ['Content-Type: text/html; charset=utf-8', '', params.richText].join('\r\n');
   }
+
+  const altBoundary = randomBoundary();
+  const content = [
+    `Content-Type: multipart/alternative; boundary="${altBoundary}"`,
+    '',
+    `--${altBoundary}`,
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    params.plainText,
+    `--${altBoundary}`,
+    htmlPart,
+    `--${altBoundary}--`,
+    '',
+  ].join('\r\n');
 
   // ...then wrapped in multipart/mixed when there are standard attachments.
   let innerMime = content;
@@ -591,9 +594,15 @@ type PgpDecryptResult = {
   // there recipientEmail is the *recipient's* address (not ours), yet the copy is also
   // encrypted to the sender's own key (senderEmail is in emailSet), so trying all self
   // keys finds it.
-  const direct = params.recipientEmail ? ecdhByEmail.get(params.recipientEmail) : undefined;
-  const candidatesToTry: EcdhCandidate[] = direct ? [direct] : [...ecdhByEmail.values()];
-  dlog('decrypt: recipient direct-hit=', !!direct, '| candidate ECDH keys=', candidatesToTry.map(c => c.email));
+  // Prefer the recipient's key (received mail) and the sender's key (our own — Sent mail);
+  // only fall back to every self key if neither matches, to avoid a WKD-fingerprint fetch
+  // storm when the account holds many keys.
+  const byRecipient = params.recipientEmail ? ecdhByEmail.get(params.recipientEmail) : undefined;
+  const bySender = params.senderEmail ? ecdhByEmail.get(params.senderEmail) : undefined;
+  const preferred = [byRecipient, bySender].filter((c): c is EcdhCandidate => !!c)
+    .filter((c, i, arr) => arr.findIndex(x => x.kid === c.kid) === i);
+  const candidatesToTry: EcdhCandidate[] = preferred.length ? preferred : [...ecdhByEmail.values()];
+  dlog('decrypt: candidates=', candidatesToTry.map(c => c.email), '| fallback-to-all=', preferred.length === 0);
 
   let sessionKey: openpgp.SessionKey | null = null;
   let lastErr: unknown = null;

@@ -32,21 +32,13 @@ function zbase32(bytes: Uint8Array): string {
 
 // Per-session cache of WKD key bytes, keyed by lower-cased email. WKD keys are
 // stable within a session, so this avoids re-fetching a recipient's (or our own)
-// key on every send/decrypt. Primed for our own addresses at unlock and cleared
-// when HSM keys change (see clearWkdCache / primeWkdCache).
+// key on every send/decrypt. Populated lazily on first use and cleared when HSM
+// keys change (see clearWkdCache).
 const wkdKeyCache = new Map<string, Uint8Array>();
 
 /** Drop all cached WKD keys — call after any HSM key change (keygen/import/delete/rotate/publish). */
 export function clearWkdCache(): void {
   wkdKeyCache.clear();
-}
-
-/** Fetch (and cache) WKD keys for the given addresses — used to warm the cache at unlock. */
-export function primeWkdCache(emails: Iterable<string>): void {
-  for (const email of emails) {
-    // Fire-and-forget; wkdFetch populates the cache on success.
-    void wkdFetch(email);
-  }
 }
 
 export async function wkdFetch(email: string): Promise<Uint8Array | null> {
