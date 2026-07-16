@@ -229,6 +229,9 @@ export function HsmProvider({ children }: { children: React.ReactNode }) {
       _singleton.state = next;
       setState(next);
       preloadEncedoPgp();
+      // Reload the trusted-peer cache for the freshly-unlocked session.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).__encedoPgpRefreshPeers?.();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       const next: HsmState = {

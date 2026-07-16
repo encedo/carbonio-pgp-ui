@@ -155,6 +155,34 @@ async function isRecipientKeyAvailable(email: string): Promise<boolean> {
   return (await keyserverFetch(email)) !== null;
 }
 
+// Trusted peers = keys the user deliberately imported into the HSM (ETSPGP:peer). A message
+// to such an address is "TRUSTED" (you verified & stored that key), vs merely "available"
+// when a key is only found live in WKD/a keyserver. Cached per session; refreshed at unlock
+// and after an import via __encedoPgpRefreshPeers.
+let _peerEmailsCache: Set<string> | null = null;
+async function getTrustedPeerEmails(): Promise<Set<string>> {
+  if (_peerEmailsCache) return _peerEmailsCache;
+  const { hem, listToken } = _singleton.state;
+  if (!hem || !listToken) return new Set();
+  try {
+    const keys = await hem.searchKeys(listToken, 'ETSPGP:');
+    const set = new Set<string>();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for (const k of keys as any[]) { const d = decodeDescr(k); if (d?.role === 'peer' && d.email) set.add(d.email.toLowerCase()); }
+    _peerEmailsCache = set;
+    return set;
+  } catch {
+    return new Set();
+  }
+}
+
+type RecipientKeyStatus = 'trusted' | 'available' | 'unavailable';
+async function recipientKeyStatus(email: string): Promise<RecipientKeyStatus> {
+  const peers = await getTrustedPeerEmails();
+  if (peers.has(email.toLowerCase())) return 'trusted';
+  return (await isRecipientKeyAvailable(email)) ? 'available' : 'unavailable';
+}
+
 // ── Window globals — consumed by carbonio-mails-ui ────────────────────────────
 
 // One-time call secret — required by all sensitive window globals.
@@ -179,6 +207,13 @@ function requireSecret(provided: unknown): void {
 (window as any).__encedoPgpGetHsm = () => _singleton.state;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (window as any).__encedoPgpCheckWkd = (email: string) => isRecipientKeyAvailable(email);
+// Richer per-recipient status for the composer: 'trusted' (key imported into the HSM),
+// 'available' (found live via WKD/keyserver) or 'unavailable'.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(window as any).__encedoPgpRecipientStatus = (email: string) => recipientKeyStatus(email);
+// Invalidate the trusted-peer cache after a peer key is imported/removed in the PGP panel.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(window as any).__encedoPgpRefreshPeers = () => { _peerEmailsCache = null; };
 
 // Navigate the Carbonio SPA to the PGP section (this module's primary-bar route).
 // Used by mails-ui when a Decrypt is attempted before the HSM is connected and the

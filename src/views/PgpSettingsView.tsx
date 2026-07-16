@@ -279,6 +279,9 @@ function PgpSettingsInner() {
       setSelfKeys(keys);
       const peers = [...peerMap.values()].filter((k): k is PeerKeyPair => !!(k.kidSign || k.kidEcdh)) as PeerKeyPair[];
       setPeerKeys(peers);
+      // Keep the composer's trusted-peer cache in sync after any key change (import/remove/gen).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).__encedoPgpRefreshPeers?.();
 
       // Fetch WKD info for peer keys: fingerprint + compare with HSM key to detect obsolete
       for (const peer of peers) {
