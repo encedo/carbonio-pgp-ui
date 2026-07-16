@@ -198,13 +198,17 @@ async function getPeerHemRaw(email: string, entry: PeerEntry): Promise<{ sign?: 
   const cached = _peerHemRaw.get(key);
   if (cached) return cached;
   const { hem } = _singleton.state;
+  // getPubKey may resolve to a raw base64 string OR an object { pubkey } — normalise, then
+  // decode. (Passing the object straight to atob was yielding garbage → false mismatch.)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const toB64 = (r: any): string => (typeof r === 'string' ? r : r?.pubkey ?? '');
   const b64ToBytes = (b64: string): Uint8Array => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
   const out: { sign?: Uint8Array; ecdh?: Uint8Array } = {};
   try {
-    // getPubKey returns the raw public key as base64. We pin on the primary (sign) key, so
-    // only fetch that; fall back to ECDH only if the peer has no sign key.
-    if (entry.kidSign) out.sign = b64ToBytes(await hem!.getPubKey(await authorizeScope(`keymgmt:use:${entry.kidSign}`), entry.kidSign));
-    else if (entry.kidEcdh) out.ecdh = b64ToBytes(await hem!.getPubKey(await authorizeScope(`keymgmt:use:${entry.kidEcdh}`), entry.kidEcdh));
+    // We pin on the primary (sign) key, so only fetch that; fall back to ECDH only if the
+    // peer has no sign key.
+    if (entry.kidSign) out.sign = b64ToBytes(toB64(await hem!.getPubKey(await authorizeScope(`keymgmt:use:${entry.kidSign}`), entry.kidSign)));
+    else if (entry.kidEcdh) out.ecdh = b64ToBytes(toB64(await hem!.getPubKey(await authorizeScope(`keymgmt:use:${entry.kidEcdh}`), entry.kidEcdh)));
   } catch { /* leave what we got */ }
   _peerHemRaw.set(key, out);
   return out;
@@ -230,6 +234,7 @@ async function recipientKeyStatus(email: string): Promise<RecipientKeyStatus> {
       const ok = peer.kidSign
         ? bytesEqual(hemRaw.sign, wkd.signRaw32)
         : bytesEqual(hemRaw.ecdh, wkd.ecdhRaw32);
+      dlog('trusted-check:', email, '| hemSign=', hemRaw.sign?.length, 'wkdSign=', wkd.signRaw32?.length, '| match=', ok);
       return ok ? 'trusted' : 'mismatch';
     } catch {
       // Can't fetch the live key to compare — we can't safely encrypt to a pinned key
