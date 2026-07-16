@@ -34,7 +34,10 @@ function zbase32(bytes: Uint8Array): string {
 // stable within a session, so this avoids re-fetching a recipient's (or our own)
 // key on every send/decrypt. Populated lazily on first use and cleared when HSM
 // keys change (see clearWkdCache).
-const wkdKeyCache = new Map<string, Uint8Array>();
+// Value is the key bytes, or null = "looked up this session, not found" — negative caching
+// avoids re-hitting WKD (and the browser re-logging a CORS error) for every keystroke/send
+// when a domain has no WKD key for the address.
+const wkdKeyCache = new Map<string, Uint8Array | null>();
 
 /** Drop all cached WKD keys — call after any HSM key change (keygen/import/delete/rotate/publish). */
 export function clearWkdCache(): void {
@@ -45,28 +48,34 @@ export async function wkdFetch(email: string): Promise<Uint8Array | null> {
   const atIdx = email.indexOf('@');
   if (atIdx < 0) return null;
   const key = email.toLowerCase();
-  const cached = wkdKeyCache.get(key);
-  if (cached) return cached;
+  if (wkdKeyCache.has(key)) return wkdKeyCache.get(key) ?? null;
 
   const local  = email.slice(0, atIdx);
   const domain = email.slice(atIdx + 1);
   const hash   = zbase32(await sha1(new TextEncoder().encode(local.toLowerCase())));
   const lEnc   = encodeURIComponent(local);
 
-  // Advanced method first
+  // Advanced method first. If the openpgpkey.<domain> host RESPONDS (even with a 404), it
+  // is authoritative — no key for this address — so we skip the direct method. The direct
+  // fallback hits the bare domain, which on a CORS-less 404 makes the browser log an error.
+  let advancedResponded = false;
   try {
     const url = `https://openpgpkey.${domain}/.well-known/openpgpkey/${domain}/hu/${hash}?l=${lEnc}`;
     const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    advancedResponded = true;
     if (res.ok) { const b = new Uint8Array(await res.arrayBuffer()); wkdKeyCache.set(key, b); return b; }
-  } catch { /* fall through */ }
+  } catch { /* advanced host unreachable — try the direct method */ }
 
-  // Direct method
-  try {
-    const url = `https://${domain}/.well-known/openpgpkey/hu/${hash}?l=${lEnc}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
-    if (res.ok) { const b = new Uint8Array(await res.arrayBuffer()); wkdKeyCache.set(key, b); return b; }
-  } catch { /* not found */ }
+  // Direct method — only when the advanced host didn't respond at all.
+  if (!advancedResponded) {
+    try {
+      const url = `https://${domain}/.well-known/openpgpkey/hu/${hash}?l=${lEnc}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+      if (res.ok) { const b = new Uint8Array(await res.arrayBuffer()); wkdKeyCache.set(key, b); return b; }
+    } catch { /* not found */ }
+  }
 
+  wkdKeyCache.set(key, null); // remember the miss so we don't re-hit WKD this session
   return null;
 }
 
