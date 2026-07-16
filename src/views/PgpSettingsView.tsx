@@ -587,6 +587,20 @@ function PgpSettingsInner() {
                   Encrypted messages are decrypted on open, without clicking Decrypt.
                 </div>
               </div>
+              <div>
+                <Checkbox
+                  label="Privacy: hide recipients (wildcard)"
+                  value={prefs.wildcard}
+                  onClick={() => togglePref('wildcard', !prefs.wildcard)}
+                />
+                <div style={{ ...S.muted, marginLeft: 30 }}>
+                  Removes recipient key IDs from encrypted messages, so nobody can see who
+                  else received it — this also allows BCC with encryption. Trade-off:
+                  Thunderbird cannot decrypt such messages (it doesn&apos;t try anonymous
+                  recipients); GnuPG/Kleopatra and ProtonMail can. Leave off unless you need
+                  recipient privacy or BCC.
+                </div>
+              </div>
             </div>
           </div>
         </div>

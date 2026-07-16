@@ -5,6 +5,7 @@ import { HsmProvider, _singleton, decodeDescr } from './store/HsmContext';
 import { patchWebCrypto } from './lib/webcrypto-patch';
 import { wkdFetch } from './lib/wkd-fetch';
 import { keyserverFetch } from './lib/keyservers';
+import { getPgpPrefs } from './lib/pgp-prefs';
 import { PgpSettingsView } from './views/PgpSettingsView';
 
 const APP_ID = 'carbonio-pgp-ui';
@@ -359,14 +360,14 @@ export type PgpSendParams = {
   const litMsg = await openpgp.createMessage({ binary: dataBytes, format: 'binary' });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const signedMsg = await (litMsg as any).sign([], [], existingSig);
+  // `wildcard` (throw-keyids) is a user preference: on = hide recipient key IDs (lets BCC
+  // stay hidden in one copy) but Thunderbird/RNP then can't decrypt (it won't trial-decrypt
+  // anonymous recipients — GnuPG/ProtonMail do); off (default) = real key IDs, every client
+  // decrypts. mails-ui gates BCC on the same preference.
   return openpgp.encrypt({
     message: signedMsg,
     encryptionKeys,
-    // Use a key ID of 0 for every recipient PKESK (throw-keyids), so no recipient — To,
-    // CC or BCC — is revealed in the message metadata. BCC stays hidden even in a single
-    // encrypted copy. Our decrypt probes every PKESK with the candidate ECDH keys anyway
-    // (it never matches on the PKESK key ID), so this doesn't affect decryption.
-    wildcard: true,
+    wildcard: getPgpPrefs().wildcard,
     config: { preferredCompressionAlgorithm: openpgp.enums.compression.uncompressed },
   });
 };

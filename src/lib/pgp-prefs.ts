@@ -15,18 +15,26 @@ export interface PgpPrefs {
   alwaysEncrypt: boolean;
   /** Decrypt incoming messages on open, without clicking Decrypt. */
   autoDecrypt: boolean;
+  /**
+   * Hide recipient key IDs in the encrypted message (wildcard / throw-keyids). Lets a
+   * single encrypted copy carry BCC recipients without revealing them — BUT breaks
+   * Thunderbird/RNP, which won't trial-decrypt anonymous recipients. Off by default.
+   */
+  wildcard: boolean;
 }
 
 export const PGP_PREF_KEYS: Record<keyof PgpPrefs, string> = {
   alwaysSign:    'pgp.pref.alwaysSign',
   alwaysEncrypt: 'pgp.pref.alwaysEncrypt',
   autoDecrypt:   'pgp.pref.autoDecrypt',
+  wildcard:      'pgp.pref.wildcard',
 };
 
 export const DEFAULT_PGP_PREFS: PgpPrefs = {
   alwaysSign:    false,
   alwaysEncrypt: false,
   autoDecrypt:   false,
+  wildcard:      false,
 };
 
 export function getPgpPrefs(): PgpPrefs {
@@ -35,6 +43,7 @@ export function getPgpPrefs(): PgpPrefs {
       alwaysSign:    localStorage.getItem(PGP_PREF_KEYS.alwaysSign)    === 'true',
       alwaysEncrypt: localStorage.getItem(PGP_PREF_KEYS.alwaysEncrypt) === 'true',
       autoDecrypt:   localStorage.getItem(PGP_PREF_KEYS.autoDecrypt)   === 'true',
+      wildcard:      localStorage.getItem(PGP_PREF_KEYS.wildcard)      === 'true',
     };
   } catch {
     return { ...DEFAULT_PGP_PREFS };
