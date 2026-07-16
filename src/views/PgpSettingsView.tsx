@@ -604,6 +604,19 @@ function PgpSettingsInner() {
                   recipient privacy or BCC.
                 </div>
               </div>
+              <div>
+                <Checkbox
+                  label="Attach my public key when signing"
+                  value={prefs.attachOwnKey}
+                  onClick={() => togglePref('attachOwnKey', !prefs.attachOwnKey)}
+                />
+                <div style={{ ...S.muted, marginLeft: 30 }}>
+                  Includes your public key so recipients can verify your signature without
+                  looking it up (e.g. Thunderbird otherwise shows &quot;signed with a key you
+                  don&apos;t have yet&quot;). On by default. Turning it off — together with
+                  &quot;hide recipients&quot; — leaks the least metadata.
+                </div>
+              </div>
             </div>
           </div>
         </div>

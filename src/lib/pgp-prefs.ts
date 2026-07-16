@@ -21,6 +21,12 @@ export interface PgpPrefs {
    * Thunderbird/RNP, which won't trial-decrypt anonymous recipients. Off by default.
    */
   wildcard: boolean;
+  /**
+   * Attach the sender's own public key to signed/encrypted messages so the recipient can
+   * verify the signature without hunting for the key. ON by default; turning it off (with
+   * wildcard on) minimises the metadata the message leaks.
+   */
+  attachOwnKey: boolean;
 }
 
 export const PGP_PREF_KEYS: Record<keyof PgpPrefs, string> = {
@@ -28,6 +34,7 @@ export const PGP_PREF_KEYS: Record<keyof PgpPrefs, string> = {
   alwaysEncrypt: 'pgp.pref.alwaysEncrypt',
   autoDecrypt:   'pgp.pref.autoDecrypt',
   wildcard:      'pgp.pref.wildcard',
+  attachOwnKey:  'pgp.pref.attachOwnKey',
 };
 
 export const DEFAULT_PGP_PREFS: PgpPrefs = {
@@ -35,6 +42,7 @@ export const DEFAULT_PGP_PREFS: PgpPrefs = {
   alwaysEncrypt: false,
   autoDecrypt:   false,
   wildcard:      false,
+  attachOwnKey:  true,
 };
 
 export function getPgpPrefs(): PgpPrefs {
@@ -44,6 +52,8 @@ export function getPgpPrefs(): PgpPrefs {
       alwaysEncrypt: localStorage.getItem(PGP_PREF_KEYS.alwaysEncrypt) === 'true',
       autoDecrypt:   localStorage.getItem(PGP_PREF_KEYS.autoDecrypt)   === 'true',
       wildcard:      localStorage.getItem(PGP_PREF_KEYS.wildcard)      === 'true',
+      // Default ON: only an explicit 'false' disables it.
+      attachOwnKey:  localStorage.getItem(PGP_PREF_KEYS.attachOwnKey)  !== 'false',
     };
   } catch {
     return { ...DEFAULT_PGP_PREFS };

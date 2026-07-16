@@ -405,31 +405,48 @@ export type PgpSendParams = {
     '',
   ].join('\r\n');
 
-  // ...then wrapped in multipart/mixed when there are standard attachments.
+  // Optionally attach the sender's own public key (application/pgp-keys) so the recipient
+  // can verify the signature without hunting for the key — e.g. Thunderbird otherwise shows
+  // "signed with a key you don't have yet". ON by default; off (with wildcard) leaks less.
+  const extraParts: string[] = [];
+  if (getPgpPrefs().attachOwnKey) {
+    const armoredSelf = senderPubKey.armor();
+    const selfName = `OpenPGP_${senderPubKey.getKeyID().toHex().toUpperCase()}.asc`;
+    extraParts.push([
+      `Content-Type: application/pgp-keys; name="${selfName}"`,
+      `Content-Disposition: attachment; filename="${selfName}"`,
+      'Content-Description: OpenPGP public key',
+      '',
+      armoredSelf,
+    ].join('\r\n'));
+  }
+
+  // ...then wrapped in multipart/mixed when there are standard attachments or the pubkey.
   let innerMime = content;
-  if (attachments.length > 0) {
+  if (attachments.length > 0 || extraParts.length > 0) {
     const mixedBoundary = randomBoundary();
     const attachmentParts = attachments.map((a) => [
-      `--${mixedBoundary}`,
       `Content-Type: ${a.contentType || 'application/octet-stream'}; name="${sanitizeName(a.filename)}"`,
       'Content-Transfer-Encoding: base64',
       `Content-Disposition: attachment; filename="${sanitizeName(a.filename)}"`,
       '',
       wrap76(a.base64),
     ].join('\r\n'));
+    const allParts = [...attachmentParts, ...extraParts];
     innerMime = [
       `Content-Type: multipart/mixed; boundary="${mixedBoundary}"`,
       '',
       `--${mixedBoundary}`,
       content,
-      ...attachmentParts,
+      ...allParts.map((p) => `--${mixedBoundary}\r\n${p}`),
       `--${mixedBoundary}--`,
       '',
     ].join('\r\n');
   }
 
   dlog('encrypt: attachments=', attachments.length, '| inlineImages=', inlineImages.length, '| inlineEmbedded(data-uri)=', inlineEmbedded,
-    '| inner MIME bytes=', innerMime.length, '| structure=', attachments.length ? 'multipart/mixed' : 'multipart/alternative');
+    '| attachOwnKey=', extraParts.length > 0, '| inner MIME bytes=', innerMime.length,
+    '| structure=', (attachments.length || extraParts.length) ? 'multipart/mixed' : 'multipart/alternative');
 
   // Build HSM signature packet (pure HSM, no openpgp.js inside rollup bundle)
   const { sigPkt, dataBytes } = await buildHsmSignaturePkt(hem, signToken, selfSignKey.kid, keyId8, innerMime);
