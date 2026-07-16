@@ -578,110 +578,6 @@ function PgpSettingsInner() {
           </div>
         </div>
 
-        {/* ── Preferences ────────────────────────────────────────────── */}
-        <div style={S.section}>
-          <div style={S.sectionHeader}>
-            <div style={S.sectionTitle}>
-              <Icon icon="SettingsOutline" size="small" />
-              Preferences
-            </div>
-          </div>
-          <div style={S.sectionBody}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              <div>
-                <Checkbox
-                  label="Always sign"
-                  value={prefs.alwaysSign}
-                  onClick={() => togglePref('alwaysSign', !prefs.alwaysSign)}
-                />
-                <div style={{ ...S.muted, marginLeft: 30 }}>
-                  Every outgoing message is signed with your own key. Requires an unlocked HSM.
-                </div>
-              </div>
-              <div>
-                <Checkbox
-                  label="Always encrypt if key available"
-                  value={prefs.alwaysEncrypt}
-                  onClick={() => togglePref('alwaysEncrypt', !prefs.alwaysEncrypt)}
-                />
-                <div style={{ ...S.muted, marginLeft: 30 }}>
-                  Encryption is turned on automatically when every recipient has a key (WKD or imported).
-                </div>
-              </div>
-              <div>
-                <Checkbox
-                  label="Auto decrypt"
-                  value={prefs.autoDecrypt}
-                  onClick={() => togglePref('autoDecrypt', !prefs.autoDecrypt)}
-                />
-                <div style={{ ...S.muted, marginLeft: 30 }}>
-                  Encrypted messages are decrypted on open, without clicking Decrypt.
-                </div>
-              </div>
-              <div>
-                <Checkbox
-                  label="Privacy: hide recipients (wildcard)"
-                  value={prefs.wildcard}
-                  onClick={() => togglePref('wildcard', !prefs.wildcard)}
-                />
-                <div style={{ ...S.muted, marginLeft: 30 }}>
-                  Removes recipient key IDs from encrypted messages, so nobody can see who
-                  else received it — this also allows BCC with encryption. Trade-off:
-                  Thunderbird cannot decrypt such messages (it doesn&apos;t try anonymous
-                  recipients); GnuPG/Kleopatra and ProtonMail can. Leave off unless you need
-                  recipient privacy or BCC.
-                </div>
-              </div>
-              <div>
-                <Checkbox
-                  label="Attach my public key when signing"
-                  value={prefs.attachOwnKey}
-                  onClick={() => togglePref('attachOwnKey', !prefs.attachOwnKey)}
-                />
-                <div style={{ ...S.muted, marginLeft: 30 }}>
-                  Includes your public key so recipients can verify your signature without
-                  looking it up (e.g. Thunderbird otherwise shows &quot;signed with a key you
-                  don&apos;t have yet&quot;). On by default. Turning it off — together with
-                  &quot;hide recipients&quot; — leaks the least metadata.
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* ── Keyservers ─────────────────────────────────────────────── */}
-        <div style={S.section}>
-          <div style={S.sectionHeader}>
-            <div style={S.sectionTitle}>
-              <Icon icon="Globe" size="small" />
-              Keyservers
-            </div>
-          </div>
-          <div style={S.sectionBody}>
-            <div style={{ ...S.muted, marginBottom: 10 }}>
-              When a recipient has no WKD key, their key is looked up on these VKS keyservers
-              (one URL per line). keys.openpgp.org verifies the email address before serving a key.
-              Keys found this way can encrypt, but are not marked TRUSTED (only keys imported into
-              the HSM are).
-            </div>
-            <textarea
-              value={keyserversText}
-              onChange={e => setKeyserversText(e.target.value)}
-              spellCheck={false}
-              rows={3}
-              style={{
-                width: '100%', boxSizing: 'border-box', fontFamily: 'monospace', fontSize: 13,
-                padding: 8, border: '1px solid #d0d0d0', borderRadius: 4, resize: 'vertical',
-              }}
-              placeholder="https://keys.openpgp.org"
-            />
-            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-              <Button label="Save" color="primary" size="small" onClick={saveKeyservers} />
-              <Button label="Reset to default" color="secondary" size="small" onClick={resetKeyservers} />
-            </div>
-          </div>
-        </div>
-
         {/* ── My Keys ────────────────────────────────────────────────── */}
         <div style={S.section}>
           <div style={S.sectionHeader}>
@@ -887,6 +783,110 @@ function PgpSettingsInner() {
                   : 'Unlock HSM to see imported peer keys.'}
               </div>
             )}
+          </div>
+        </div>
+
+        {/* ── Preferences ────────────────────────────────────────────── */}
+        <div style={S.section}>
+          <div style={S.sectionHeader}>
+            <div style={S.sectionTitle}>
+              <Icon icon="SettingsOutline" size="small" />
+              Preferences
+            </div>
+          </div>
+          <div style={S.sectionBody}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div>
+                <Checkbox
+                  label="Always sign"
+                  value={prefs.alwaysSign}
+                  onClick={() => togglePref('alwaysSign', !prefs.alwaysSign)}
+                />
+                <div style={{ ...S.muted, marginLeft: 30 }}>
+                  Every outgoing message is signed with your own key. Requires an unlocked HSM.
+                </div>
+              </div>
+              <div>
+                <Checkbox
+                  label="Always encrypt if key available"
+                  value={prefs.alwaysEncrypt}
+                  onClick={() => togglePref('alwaysEncrypt', !prefs.alwaysEncrypt)}
+                />
+                <div style={{ ...S.muted, marginLeft: 30 }}>
+                  Encryption is turned on automatically when every recipient has a key (WKD or imported).
+                </div>
+              </div>
+              <div>
+                <Checkbox
+                  label="Auto decrypt"
+                  value={prefs.autoDecrypt}
+                  onClick={() => togglePref('autoDecrypt', !prefs.autoDecrypt)}
+                />
+                <div style={{ ...S.muted, marginLeft: 30 }}>
+                  Encrypted messages are decrypted on open, without clicking Decrypt.
+                </div>
+              </div>
+              <div>
+                <Checkbox
+                  label="Privacy: hide recipients (wildcard)"
+                  value={prefs.wildcard}
+                  onClick={() => togglePref('wildcard', !prefs.wildcard)}
+                />
+                <div style={{ ...S.muted, marginLeft: 30 }}>
+                  Removes recipient key IDs from encrypted messages, so nobody can see who
+                  else received it — this also allows BCC with encryption. Trade-off:
+                  Thunderbird cannot decrypt such messages (it doesn&apos;t try anonymous
+                  recipients); GnuPG/Kleopatra and ProtonMail can. Leave off unless you need
+                  recipient privacy or BCC.
+                </div>
+              </div>
+              <div>
+                <Checkbox
+                  label="Attach my public key when signing"
+                  value={prefs.attachOwnKey}
+                  onClick={() => togglePref('attachOwnKey', !prefs.attachOwnKey)}
+                />
+                <div style={{ ...S.muted, marginLeft: 30 }}>
+                  Includes your public key so recipients can verify your signature without
+                  looking it up (e.g. Thunderbird otherwise shows &quot;signed with a key you
+                  don&apos;t have yet&quot;). On by default. Turning it off — together with
+                  &quot;hide recipients&quot; — leaks the least metadata.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ── Keyservers ─────────────────────────────────────────────── */}
+        <div style={S.section}>
+          <div style={S.sectionHeader}>
+            <div style={S.sectionTitle}>
+              <Icon icon="Globe" size="small" />
+              Keyservers
+            </div>
+          </div>
+          <div style={S.sectionBody}>
+            <div style={{ ...S.muted, marginBottom: 10 }}>
+              When a recipient has no WKD key, their key is looked up on these VKS keyservers
+              (one URL per line). keys.openpgp.org verifies the email address before serving a key.
+              Keys found this way can encrypt, but are not marked TRUSTED (only keys imported into
+              the HSM are).
+            </div>
+            <textarea
+              value={keyserversText}
+              onChange={e => setKeyserversText(e.target.value)}
+              spellCheck={false}
+              rows={3}
+              style={{
+                width: '100%', boxSizing: 'border-box', fontFamily: 'monospace', fontSize: 13,
+                padding: 8, border: '1px solid #d0d0d0', borderRadius: 4, resize: 'vertical',
+              }}
+              placeholder="https://keys.openpgp.org"
+            />
+            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+              <Button label="Save" color="primary" size="small" onClick={saveKeyservers} />
+              <Button label="Reset to default" color="secondary" size="small" onClick={resetKeyservers} />
+            </div>
           </div>
         </div>
 
