@@ -4,6 +4,7 @@ import { addRoute, registerFunctions } from '@zextras/carbonio-shell-ui';
 import { HsmProvider, _singleton, decodeDescr } from './store/HsmContext';
 import { patchWebCrypto } from './lib/webcrypto-patch';
 import { wkdFetch } from './lib/wkd-fetch';
+import { keyserverFetch } from './lib/keyservers';
 import { PgpSettingsView } from './views/PgpSettingsView';
 
 const APP_ID = 'carbonio-pgp-ui';
@@ -128,11 +129,29 @@ async function readValidatedWkdKey(
   return validate(keyBytes, email, opts) as Promise<openpgp.PublicKey>;
 }
 
-/** Fetch and validate a recipient's WKD key. */
-async function wkdReadKey(email: string): Promise<openpgp.PublicKey> {
-  const keyBytes = await wkdFetch(email);
-  if (!keyBytes) throw new Error(`No WKD key found for ${email}`);
-  return readValidatedWkdKey(keyBytes, email);
+/**
+ * Resolve and validate a recipient's public key. Tries WKD first (key served from the
+ * recipient's own domain over TLS — strongest binding), then the configured VKS
+ * keyservers (keys.openpgp.org verifies the address). The same validation (UID↔email +
+ * usable encryption key) applies whatever the source, so an RSA key from a keyserver is
+ * accepted just like an Ed25519/X25519 WKD key.
+ */
+async function resolveRecipientKey(email: string): Promise<openpgp.PublicKey> {
+  const wkd = await wkdFetch(email);
+  if (wkd) return readValidatedWkdKey(wkd, email);
+
+  const armored = await keyserverFetch(email);
+  if (armored) {
+    const binaryKey = (await openpgp.readKey({ armoredKey: armored })).write();
+    return readValidatedWkdKey(binaryKey, email);
+  }
+  throw new Error(`No key found for ${email} (WKD or keyservers)`);
+}
+
+/** True if a usable key for this address can be found via WKD or a configured keyserver. */
+async function isRecipientKeyAvailable(email: string): Promise<boolean> {
+  if (await wkdFetch(email)) return true;
+  return (await keyserverFetch(email)) !== null;
 }
 
 // ── Window globals — consumed by carbonio-mails-ui ────────────────────────────
@@ -158,7 +177,7 @@ function requireSecret(provided: unknown): void {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (window as any).__encedoPgpGetHsm = () => _singleton.state;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-(window as any).__encedoPgpCheckWkd = (email: string) => wkdFetch(email).then(r => r !== null);
+(window as any).__encedoPgpCheckWkd = (email: string) => isRecipientKeyAvailable(email);
 
 // Navigate the Carbonio SPA to the PGP section (this module's primary-bar route).
 // Used by mails-ui when a Decrypt is attempted before the HSM is connected and the
@@ -327,11 +346,12 @@ export type PgpSendParams = {
   // Build HSM signature packet (pure HSM, no openpgp.js inside rollup bundle)
   const { sigPkt, dataBytes } = await buildHsmSignaturePkt(hem, signToken, selfSignKey.kid, keyId8, innerMime);
 
-  // Resolve recipient public keys via wkdFetch (webpack context, works fine)
+  // Resolve recipient public keys via WKD, then configured keyservers (RSA keys from a
+  // keyserver work here — openpgp encrypts to them locally; only HEM import is Ed25519/X25519).
   const emailSet = [...new Set([...params.recipientEmails, params.senderEmail])];
   const encryptionKeys: openpgp.PublicKey[] = [];
   for (const email of emailSet) {
-    encryptionKeys.push(await wkdReadKey(email));
+    encryptionKeys.push(await resolveRecipientKey(email));
   }
 
   // Assemble signed message and encrypt — all openpgp calls use webpack instance

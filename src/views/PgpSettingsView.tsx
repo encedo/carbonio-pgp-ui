@@ -6,6 +6,7 @@ import { decodeDescr, useHsm, DESCR_PREFIX, DESCR, encodeDescr } from '../store/
 import { patchWebCrypto } from '../lib/webcrypto-patch';
 import { getDisplayNameForEmail } from '../lib/account-identity';
 import { getPgpPrefs, setPgpPref, PgpPrefs } from '../lib/pgp-prefs';
+import { getKeyservers, setKeyservers, DEFAULT_KEYSERVERS } from '../lib/keyservers';
 import { wkdLookupParse, clearWkdCache } from '../lib/wkd-fetch';
 import { HsmUrlModal } from '../components/HsmUrlModal';
 import { HsmPasswordModal } from '../components/HsmPasswordModal';
@@ -210,6 +211,17 @@ function PgpSettingsInner() {
   const togglePref = useCallback((pref: keyof PgpPrefs, value: boolean) => {
     setPgpPref(pref, value);
     setPrefs(prev => ({ ...prev, [pref]: value }));
+  }, []);
+
+  const [keyserversText, setKeyserversText] = useState<string>(() => getKeyservers().join('\n'));
+  const saveKeyservers = useCallback(() => {
+    const list = keyserversText.split('\n').map(s => s.trim()).filter(Boolean);
+    setKeyservers(list);
+    setKeyserversText((list.length ? list : DEFAULT_KEYSERVERS).join('\n'));
+  }, [keyserversText]);
+  const resetKeyservers = useCallback(() => {
+    setKeyservers([...DEFAULT_KEYSERVERS]);
+    setKeyserversText(DEFAULT_KEYSERVERS.join('\n'));
   }, []);
 
   const [selfKeys,    setSelfKeys]    = useState<KeyPair[]>([]);
@@ -575,6 +587,39 @@ function PgpSettingsInner() {
                   Encrypted messages are decrypted on open, without clicking Decrypt.
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ── Keyservers ─────────────────────────────────────────────── */}
+        <div style={S.section}>
+          <div style={S.sectionHeader}>
+            <div style={S.sectionTitle}>
+              <Icon icon="Globe" size="small" />
+              Keyservers
+            </div>
+          </div>
+          <div style={S.sectionBody}>
+            <div style={{ ...S.muted, marginBottom: 10 }}>
+              When a recipient has no WKD key, their key is looked up on these VKS keyservers
+              (one URL per line). keys.openpgp.org verifies the email address before serving a key.
+              Keys found this way can encrypt, but are not marked TRUSTED (only keys imported into
+              the HSM are).
+            </div>
+            <textarea
+              value={keyserversText}
+              onChange={e => setKeyserversText(e.target.value)}
+              spellCheck={false}
+              rows={3}
+              style={{
+                width: '100%', boxSizing: 'border-box', fontFamily: 'monospace', fontSize: 13,
+                padding: 8, border: '1px solid #d0d0d0', borderRadius: 4, resize: 'vertical',
+              }}
+              placeholder="https://keys.openpgp.org"
+            />
+            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+              <Button label="Save" color="primary" size="small" onClick={saveKeyservers} />
+              <Button label="Reset to default" color="secondary" size="small" onClick={resetKeyservers} />
             </div>
           </div>
         </div>

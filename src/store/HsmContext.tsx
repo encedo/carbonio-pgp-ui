@@ -9,6 +9,7 @@ import {
   HSM_URL_META_KEY,
 } from '../lib/account-metadata';
 import { applyPgpPrefsFromAttrs } from '../lib/pgp-prefs';
+import { applyKeyserversFromAttrs } from '../lib/keyservers';
 
 // Preload encedo-pgp.browser.js as soon as we know crypto is available,
 // so openpgp.js module-level code runs while window.crypto.subtle is intact.
@@ -174,6 +175,7 @@ export function HsmProvider({ children }: { children: React.ReactNode }) {
       const attrs = await readPgpAccountMetadata();
       if (cancelled || Object.keys(attrs).length === 0) return;
       applyPgpPrefsFromAttrs(attrs);
+      applyKeyserversFromAttrs(attrs);
       const url = attrs[HSM_URL_META_KEY];
       if (url && url !== _singleton.state.url) {
         localStorage.setItem(HSM_URL_KEY, url);
