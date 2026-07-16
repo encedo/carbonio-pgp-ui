@@ -7,6 +7,7 @@ import { patchWebCrypto } from '../lib/webcrypto-patch';
 import { getDisplayNameForEmail } from '../lib/account-identity';
 import { getPgpPrefs, setPgpPref, PgpPrefs } from '../lib/pgp-prefs';
 import { getKeyservers, setKeyservers, DEFAULT_KEYSERVERS } from '../lib/keyservers';
+import { publishToVks } from '../lib/vks-publish';
 import { wkdLookupParse, clearWkdCache } from '../lib/wkd-fetch';
 import { HsmUrlModal } from '../components/HsmUrlModal';
 import { HsmPasswordModal } from '../components/HsmPasswordModal';
@@ -232,6 +233,8 @@ function PgpSettingsInner() {
   const [wkdStatuses,    setWkdStatuses]    = useState<Map<string, 'checking' | 'published' | 'local' | 'mismatch'>>(new Map());
   const [publishingEmail, setPublishingEmail] = useState<string | null>(null);
   const [publishError,    setPublishError]    = useState<string | null>(null);
+  const [vksPublishingEmail, setVksPublishingEmail] = useState<string | null>(null);
+  const [vksMsg,             setVksMsg]             = useState<string | null>(null);
 
   const [peerEmailInput,  setPeerEmailInput]  = useState('');
   const [importModalOpen, setImportModalOpen] = useState(false);
@@ -383,6 +386,31 @@ function PgpSettingsInner() {
       setPublishError(e instanceof Error ? e.message : String(e));
     } finally {
       setPublishingEmail(null);
+    }
+  }
+
+  async function handleVksPublish(kp: KeyPair) {
+    if (!hem) return;
+    setVksPublishingEmail(kp.email);
+    setVksMsg(null);
+    setPublishError(null);
+    try {
+      const useToken     = await authorize(`keymgmt:use:${kp.kidSign}`);
+      const useEcdhToken = await authorize(`keymgmt:use:${kp.kidEcdh}`);
+      patchWebCrypto();
+      const { buildCertificate } = await import('../../../encedo-pgp-js/dist/encedo-pgp.browser.js');
+      const { cert } = await buildCertificate(hem, useToken, kp.kidSign, kp.kidEcdh, kp.email, {
+        ecdhToken: useEcdhToken, timestamp: kp.iat, expiryTimestamp: kp.exp,
+        displayName: getDisplayNameForEmail(kp.email, account),
+      });
+      const res = await publishToVks(cert, kp.email);
+      setVksMsg(res.verificationRequested
+        ? `Uploaded to keys.openpgp.org — check ${kp.email} for a verification email to finish publishing.`
+        : `Uploaded to keys.openpgp.org (status: ${res.status}).`);
+    } catch (e: unknown) {
+      setPublishError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setVksPublishingEmail(null);
     }
   }
 
@@ -745,6 +773,12 @@ function PgpSettingsInner() {
                                       onClick={() => { setRotateError(null); setRotateTarget(kp); }}
                                     />
                                   )}
+                                  <Button
+                                    label={vksPublishingEmail === kp.email ? 'Publishing…' : '↑ keys.openpgp.org'}
+                                    color="secondary" size="small"
+                                    disabled={vksPublishingEmail === kp.email}
+                                    onClick={() => handleVksPublish(kp)}
+                                  />
                                   <Button label="✕ Revoke" color="error" size="small" onClick={() => { setRevokeError(null); setRevokeTarget(kp); }} />
                                 </div>
                               </td>
@@ -766,6 +800,12 @@ function PgpSettingsInner() {
                   <div style={{ padding: '10px 16px', background: '#fff5f5', borderTop: '1px solid #fed7d7', display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 13, color: '#c53030' }}>
                     <span>Publish failed: {publishError}</span>
                     <Button label="Dismiss" color="secondary" size="small" onClick={() => setPublishError(null)} />
+                  </div>
+                )}
+                {vksMsg && (
+                  <div style={{ padding: '10px 16px', background: '#f0fff4', borderTop: '1px solid #c6f6d5', display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 13, color: '#276749' }}>
+                    <span>{vksMsg}</span>
+                    <Button label="Dismiss" color="secondary" size="small" onClick={() => setVksMsg(null)} />
                   </div>
                 )}
               </>
