@@ -6,6 +6,8 @@
  * contract with mails-ui `src/commons/pgp-prefs.ts` — keep both in sync.
  */
 
+import { writePgpAccountMetadata } from './account-metadata';
+
 export interface PgpPrefs {
   /** Sign every outgoing message with the own HSM key. */
   alwaysSign: boolean;
@@ -44,5 +46,24 @@ export function setPgpPref(pref: keyof PgpPrefs, value: boolean): void {
     localStorage.setItem(PGP_PREF_KEYS[pref], String(value));
   } catch {
     /* private mode / storage disabled — preference simply does not persist */
+  }
+  // Persist to the Carbonio account too (best-effort) so it syncs across devices.
+  void writePgpAccountMetadata({ [PGP_PREF_KEYS[pref]]: String(value) });
+}
+
+/**
+ * Copy pref values coming from account metadata into localStorage (the synchronous
+ * source of truth). Writes directly — does NOT call setPgpPref — to avoid pushing the
+ * freshly-read values straight back to the account.
+ */
+export function applyPgpPrefsFromAttrs(attrs: Record<string, string>): void {
+  for (const key of Object.values(PGP_PREF_KEYS)) {
+    if (key in attrs) {
+      try {
+        localStorage.setItem(key, attrs[key]);
+      } catch {
+        /* storage disabled */
+      }
+    }
   }
 }

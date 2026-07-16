@@ -3,6 +3,12 @@ import React, { createContext, useCallback, useContext, useEffect, useState } fr
 import { useUserAccount, useUserSettings } from '@zextras/carbonio-shell-ui';
 import { HEM } from '../../../hem-sdk-js/hem-sdk.browser.js';
 import { patchWebCrypto } from '../lib/webcrypto-patch';
+import {
+  readPgpAccountMetadata,
+  writePgpAccountMetadata,
+  HSM_URL_META_KEY,
+} from '../lib/account-metadata';
+import { applyPgpPrefsFromAttrs } from '../lib/pgp-prefs';
 
 // Preload encedo-pgp.browser.js as soon as we know crypto is available,
 // so openpgp.js module-level code runs while window.crypto.subtle is intact.
@@ -145,8 +151,31 @@ export function HsmProvider({ children }: { children: React.ReactNode }) {
     _singleton.state = state;
   }, [state]);
 
+  // Hydrate PGP settings from the Carbonio account once at startup: prefs into
+  // localStorage (the synchronous source of truth) and the last-used HSM URL into state.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const attrs = await readPgpAccountMetadata();
+      if (cancelled || Object.keys(attrs).length === 0) return;
+      applyPgpPrefsFromAttrs(attrs);
+      const url = attrs[HSM_URL_META_KEY];
+      if (url && url !== _singleton.state.url) {
+        localStorage.setItem(HSM_URL_KEY, url);
+        const next: HsmState = { ..._singleton.state, url };
+        _singleton.state = next;
+        setState(next);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const setUrl = useCallback((url: string) => {
     localStorage.setItem(HSM_URL_KEY, url);
+    // Remember the last-used HSM URL on the account too (best-effort, syncs across devices).
+    void writePgpAccountMetadata({ [HSM_URL_META_KEY]: url });
     _singleton.state.hem?.clearKeys();
     _singleton.tokenCache.clear();
     const next: HsmState = {
