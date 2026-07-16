@@ -9,8 +9,6 @@ interface Props {
   onUnlocked?: () => void;
 }
 
-const CONNECT_TIMEOUT_MS = 5000;
-
 export function HsmPasswordModal({ open, onClose, onUnlocked }: Props) {
   const { connect, error } = useHsm();
   const [password, setPassword] = useState('');
@@ -26,15 +24,9 @@ export function HsmPasswordModal({ open, onClose, onUnlocked }: Props) {
     setLoading(true);
     setLocalError(null);
     try {
-      await Promise.race([
-        connect(password),
-        new Promise((_resolve, reject) => {
-          setTimeout(
-            () => reject(new Error(`Connection timed out after ${CONNECT_TIMEOUT_MS / 1000}s — check HSM URL / network`)),
-            CONNECT_TIMEOUT_MS,
-          );
-        }),
-      ]);
+      // connect() time-boxes only the first HSM contact (checkin); once the HSM
+      // responds the unlock runs to completion. Cancel/ESC still interrupt via cancelledRef.
+      await connect(password);
       if (cancelledRef.current) return;
       setPassword('');
       onUnlocked?.();

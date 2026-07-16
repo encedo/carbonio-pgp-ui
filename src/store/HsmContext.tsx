@@ -94,6 +94,21 @@ export interface HsmContextValue extends HsmState {
 const HSM_URL_KEY = 'pgp-hsm-url';
 const HSM_PW_KEY  = 'pgp-hsm-password';
 const TOKEN_TTL   = 8 * 3600;
+// Time-box only the first HSM contact (checkin). Once the HSM answers, the rest of the
+// unlock (authorize, key listing) can take as long as it needs — those requests are
+// clearly progressing, so a blanket timeout there produced false "timed out" errors.
+const CHECKIN_TIMEOUT_MS = 5000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    timeout,
+  ]);
+}
 
 // Mutable singleton — shared across all HsmProvider instances/remounts.
 // Exported so app.tsx can expose HSM state to mails-ui via window globals.
@@ -192,7 +207,11 @@ export function HsmProvider({ children }: { children: React.ReactNode }) {
     setState(s => ({ ...s, error: null }));
     try {
       const hem = new HEM(_singleton.state.url);
-      await hem.hemCheckin();
+      await withTimeout(
+        hem.hemCheckin(),
+        CHECKIN_TIMEOUT_MS,
+        `Cannot reach HSM within ${CHECKIN_TIMEOUT_MS / 1000}s — check HSM URL / network`,
+      );
       _singleton.tokenCache.clear();
 
       // First call passes the real password — HEM derives and caches the X25519 keys,
