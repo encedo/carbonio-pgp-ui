@@ -201,9 +201,10 @@ async function getPeerHemRaw(email: string, entry: PeerEntry): Promise<{ sign?: 
   const b64ToBytes = (b64: string): Uint8Array => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
   const out: { sign?: Uint8Array; ecdh?: Uint8Array } = {};
   try {
-    // getPubKey returns the raw public key as base64.
+    // getPubKey returns the raw public key as base64. We pin on the primary (sign) key, so
+    // only fetch that; fall back to ECDH only if the peer has no sign key.
     if (entry.kidSign) out.sign = b64ToBytes(await hem!.getPubKey(await authorizeScope(`keymgmt:use:${entry.kidSign}`), entry.kidSign));
-    if (entry.kidEcdh) out.ecdh = b64ToBytes(await hem!.getPubKey(await authorizeScope(`keymgmt:use:${entry.kidEcdh}`), entry.kidEcdh));
+    else if (entry.kidEcdh) out.ecdh = b64ToBytes(await hem!.getPubKey(await authorizeScope(`keymgmt:use:${entry.kidEcdh}`), entry.kidEcdh));
   } catch { /* leave what we got */ }
   _peerHemRaw.set(key, out);
   return out;
@@ -223,9 +224,13 @@ async function recipientKeyStatus(email: string): Promise<RecipientKeyStatus> {
     try {
       const hemRaw = await getPeerHemRaw(email, peer);
       const wkd = await wkdLookupParse(email);
-      const signOk = peer.kidSign ? bytesEqual(hemRaw.sign, wkd.signRaw32) : true;
-      const ecdhOk = peer.kidEcdh ? bytesEqual(hemRaw.ecdh, wkd.ecdhRaw32) : true;
-      return signOk && ecdhOk ? 'trusted' : 'mismatch';
+      // Pin on the PRIMARY (signing) key only — that is the identity. The ECDH subkey is
+      // bound to it by a signature (an attacker can't forge that), and it may be legitimately
+      // rotated, so comparing it would give false mismatches. Mirrors the PGP panel's check.
+      const ok = peer.kidSign
+        ? bytesEqual(hemRaw.sign, wkd.signRaw32)
+        : bytesEqual(hemRaw.ecdh, wkd.ecdhRaw32);
+      return ok ? 'trusted' : 'mismatch';
     } catch {
       // Can't fetch the live key to compare — we can't safely encrypt to a pinned key
       // we can't re-verify. Report unavailable rather than silently trusting.
