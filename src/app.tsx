@@ -3,7 +3,7 @@ import * as openpgp from 'openpgp';
 import { addRoute, registerFunctions } from '@zextras/carbonio-shell-ui';
 import { HsmProvider, _singleton, decodeDescr } from './store/HsmContext';
 import { patchWebCrypto } from './lib/webcrypto-patch';
-import { wkdFetch } from './lib/wkd-fetch';
+import { wkdFetch, wkdLookupParse } from './lib/wkd-fetch';
 import { keyserverFetch } from './lib/keyservers';
 import { getPgpPrefs } from './lib/pgp-prefs';
 import { PgpSettingsView } from './views/PgpSettingsView';
@@ -156,30 +156,82 @@ async function isRecipientKeyAvailable(email: string): Promise<boolean> {
 }
 
 // Trusted peers = keys the user deliberately imported into the HSM (ETSPGP:peer). A message
-// to such an address is "TRUSTED" (you verified & stored that key), vs merely "available"
-// when a key is only found live in WKD/a keyserver. Cached per session; refreshed at unlock
-// and after an import via __encedoPgpRefreshPeers.
-let _peerEmailsCache: Set<string> | null = null;
-async function getTrustedPeerEmails(): Promise<Set<string>> {
-  if (_peerEmailsCache) return _peerEmailsCache;
+// to such an address is "TRUSTED" — but only if the live WKD key still matches the key we
+// stored (fingerprint/raw-key pinning): if the WKD key was swapped, that's 'mismatch' and
+// encryption is refused. Cached per session; refreshed at unlock and after an import.
+type PeerEntry = { kidSign?: string; kidEcdh?: string };
+let _peerCache: Map<string, PeerEntry> | null = null;
+const _peerHemRaw = new Map<string, { sign?: Uint8Array; ecdh?: Uint8Array }>();
+
+function clearPeerCaches(): void {
+  _peerCache = null;
+  _peerHemRaw.clear();
+}
+
+async function getTrustedPeers(): Promise<Map<string, PeerEntry>> {
+  if (_peerCache) return _peerCache;
   const { hem, listToken } = _singleton.state;
-  if (!hem || !listToken) return new Set();
+  if (!hem || !listToken) return new Map();
   try {
     const keys = await hem.searchKeys(listToken, 'ETSPGP:');
-    const set = new Set<string>();
+    const map = new Map<string, PeerEntry>();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    for (const k of keys as any[]) { const d = decodeDescr(k); if (d?.role === 'peer' && d.email) set.add(d.email.toLowerCase()); }
-    _peerEmailsCache = set;
-    return set;
+    for (const k of keys as any[]) {
+      const d = decodeDescr(k);
+      if (d?.role === 'peer' && d.email) {
+        const e = map.get(d.email.toLowerCase()) ?? {};
+        if (d.keyType === 'sign') e.kidSign = k.kid;
+        if (d.keyType === 'ecdh') e.kidEcdh = k.kid;
+        map.set(d.email.toLowerCase(), e);
+      }
+    }
+    _peerCache = map;
+    return map;
   } catch {
-    return new Set();
+    return new Map();
   }
 }
 
-type RecipientKeyStatus = 'trusted' | 'available' | 'unavailable';
+/** Raw public-key bytes of a peer as stored in the HSM (cached), used for pinning. */
+async function getPeerHemRaw(email: string, entry: PeerEntry): Promise<{ sign?: Uint8Array; ecdh?: Uint8Array }> {
+  const key = email.toLowerCase();
+  const cached = _peerHemRaw.get(key);
+  if (cached) return cached;
+  const { hem } = _singleton.state;
+  const b64ToBytes = (b64: string): Uint8Array => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  const out: { sign?: Uint8Array; ecdh?: Uint8Array } = {};
+  try {
+    // getPubKey returns the raw public key as base64.
+    if (entry.kidSign) out.sign = b64ToBytes(await hem!.getPubKey(await authorizeScope(`keymgmt:use:${entry.kidSign}`), entry.kidSign));
+    if (entry.kidEcdh) out.ecdh = b64ToBytes(await hem!.getPubKey(await authorizeScope(`keymgmt:use:${entry.kidEcdh}`), entry.kidEcdh));
+  } catch { /* leave what we got */ }
+  _peerHemRaw.set(key, out);
+  return out;
+}
+
+function bytesEqual(a?: Uint8Array, b?: Uint8Array): boolean {
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+type RecipientKeyStatus = 'trusted' | 'mismatch' | 'available' | 'unavailable';
 async function recipientKeyStatus(email: string): Promise<RecipientKeyStatus> {
-  const peers = await getTrustedPeerEmails();
-  if (peers.has(email.toLowerCase())) return 'trusted';
+  const peer = (await getTrustedPeers()).get(email.toLowerCase());
+  if (peer && (peer.kidSign || peer.kidEcdh)) {
+    // Trusted peer — pin: the live WKD key must still match the key stored in the HSM.
+    try {
+      const hemRaw = await getPeerHemRaw(email, peer);
+      const wkd = await wkdLookupParse(email);
+      const signOk = peer.kidSign ? bytesEqual(hemRaw.sign, wkd.signRaw32) : true;
+      const ecdhOk = peer.kidEcdh ? bytesEqual(hemRaw.ecdh, wkd.ecdhRaw32) : true;
+      return signOk && ecdhOk ? 'trusted' : 'mismatch';
+    } catch {
+      // Can't fetch the live key to compare — we can't safely encrypt to a pinned key
+      // we can't re-verify. Report unavailable rather than silently trusting.
+      return 'unavailable';
+    }
+  }
   return (await isRecipientKeyAvailable(email)) ? 'available' : 'unavailable';
 }
 
@@ -213,7 +265,7 @@ function requireSecret(provided: unknown): void {
 (window as any).__encedoPgpRecipientStatus = (email: string) => recipientKeyStatus(email);
 // Invalidate the trusted-peer cache after a peer key is imported/removed in the PGP panel.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-(window as any).__encedoPgpRefreshPeers = () => { _peerEmailsCache = null; };
+(window as any).__encedoPgpRefreshPeers = () => { clearPeerCaches(); };
 
 // Navigate the Carbonio SPA to the PGP section (this module's primary-bar route).
 // Used by mails-ui when a Decrypt is attempted before the HSM is connected and the
@@ -387,6 +439,12 @@ export type PgpSendParams = {
   const emailSet = [...new Set([...params.recipientEmails, params.senderEmail])];
   const encryptionKeys: openpgp.PublicKey[] = [];
   for (const email of emailSet) {
+    // Defense in depth: never encrypt to a trusted peer whose published key no longer
+    // matches the key pinned in the HSM (the composer already disables it, but don't
+    // rely on the UI alone).
+    if ((await recipientKeyStatus(email)) === 'mismatch') {
+      throw new Error(`Key fingerprint mismatch for ${email} — the published key does not match your trusted key; not encrypting.`);
+    }
     encryptionKeys.push(await resolveRecipientKey(email));
   }
 
