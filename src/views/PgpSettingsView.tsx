@@ -549,7 +549,7 @@ function PgpSettingsInner() {
                 <Checkbox
                   label="Always sign"
                   value={prefs.alwaysSign}
-                  onChange={(checked: boolean) => togglePref('alwaysSign', checked)}
+                  onClick={() => togglePref('alwaysSign', !prefs.alwaysSign)}
                 />
                 <div style={{ ...S.muted, marginLeft: 30 }}>
                   Every outgoing message is signed with your own key. Requires an unlocked HSM.
@@ -559,7 +559,7 @@ function PgpSettingsInner() {
                 <Checkbox
                   label="Always encrypt if key available"
                   value={prefs.alwaysEncrypt}
-                  onChange={(checked: boolean) => togglePref('alwaysEncrypt', checked)}
+                  onClick={() => togglePref('alwaysEncrypt', !prefs.alwaysEncrypt)}
                 />
                 <div style={{ ...S.muted, marginLeft: 30 }}>
                   Encryption is turned on automatically when every recipient has a key (WKD or imported).
@@ -569,7 +569,7 @@ function PgpSettingsInner() {
                 <Checkbox
                   label="Auto decrypt"
                   value={prefs.autoDecrypt}
-                  onChange={(checked: boolean) => togglePref('autoDecrypt', checked)}
+                  onClick={() => togglePref('autoDecrypt', !prefs.autoDecrypt)}
                 />
                 <div style={{ ...S.muted, marginLeft: 30 }}>
                   Encrypted messages are decrypted on open, without clicking Decrypt.
