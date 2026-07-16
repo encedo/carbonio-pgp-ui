@@ -506,6 +506,13 @@ type PgpDecryptResult = {
   sigValid: boolean | null;
 };
 
+// Render a verified/plain signed message body as readable HTML: keep line breaks but use
+// the surrounding message font (not the raw monospace <pre>), which reads like an email.
+function signedBodyHtml(text: string): string {
+  const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return `<div style="white-space:pre-wrap;word-break:break-word;font-family:inherit;font-size:14px;line-height:1.55">${escaped}</div>`;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (window as any).__encedoPgpDecrypt = async (params: PgpDecryptParams, callSecret?: unknown): Promise<PgpDecryptResult> => {
   requireSecret(callSecret);
@@ -527,7 +534,7 @@ type PgpDecryptResult = {
     try { senderPubKey = await readValidatedWkdKey(senderKeyBytes, params.senderEmail, { requireEncryptionKey: false }); dlog('sign: sender key validated, keyID=', senderPubKey.getKeyID().toHex()); }
     catch (e) { senderPubKey = null; dlog('sign: sender key REJECTED by validation:', e instanceof Error ? e.message : e); }
     if (!senderPubKey) {
-      return { html: `<pre style="white-space:pre-wrap">${cleartextMsg.getText().replace(/</g, '&lt;')}</pre>`, signerEmail: params.senderEmail, sigValid: null };
+      return { html: signedBodyHtml(cleartextMsg.getText()), signerEmail: params.senderEmail, sigValid: null };
     }
     const result = await openpgp.verify({ message: cleartextMsg, verificationKeys: [senderPubKey] });
     const sig = result.signatures[0];
@@ -535,7 +542,7 @@ type PgpDecryptResult = {
     try { sigValid = sig ? await sig.verified : null; dlog('sign: signature verified =', sigValid); }
     catch (e) { sigValid = false; dlog('sign: signature verify FAILED:', e instanceof Error ? e.message : e, '| sig keyID=', (sig?.keyID as any)?.toHex?.()); }
     const text = result.data as string;
-    return { html: `<pre style="white-space:pre-wrap">${text.replace(/</g, '&lt;')}</pre>`, signerEmail: params.senderEmail, sigValid };
+    return { html: signedBodyHtml(text), signerEmail: params.senderEmail, sigValid };
   }
 
   // Encrypted message — HSM needed
