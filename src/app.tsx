@@ -206,20 +206,27 @@ export type PgpSendParams = {
     throw new Error(`Unauthorized: senderEmail does not match logged-in user`);
   }
 
-  const { signCleartextMessage, buildCertificate } = await getPgp();
+  const { signCleartextMessage } = await getPgp();
 
   const allKeys = await hem.searchKeys(listToken, 'ETSPGP:');
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const selfSignKey = allKeys.find((k: any) => { const d = decodeDescr(k); return d?.role === 'self' && d?.keyType === 'sign' && d?.email === params.senderEmail; });
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const selfEcdhKey = allKeys.find((k: any) => { const d = decodeDescr(k); return d?.role === 'self' && d?.keyType === 'ecdh' && d?.email === params.senderEmail; });
-  if (!selfSignKey || !selfEcdhKey) throw new Error(`No PGP keys found for ${params.senderEmail}`);
+  if (!selfSignKey) throw new Error(`No PGP sign key found for ${params.senderEmail}`);
 
   const signToken = await authorizeScope(`keymgmt:use:${selfSignKey.kid}`);
-  const ecdhToken = await authorizeScope(`keymgmt:use:${selfEcdhKey.kid}`);
-  const { keyId } = await buildCertificate(hem, signToken, selfSignKey.kid, selfEcdhKey.kid, params.senderEmail, { ecdhToken });
 
-  return signCleartextMessage(hem, signToken, selfSignKey.kid, keyId, params.plainText);
+  // keyId8 from the WKD-published cert — authoritative, so the signature's issuer keyID
+  // matches the key recipients fetch from WKD (identical to the encrypt+sign path).
+  // buildCertificate here produced a different keyId (different creation time baked into
+  // the fingerprint), so the signature referenced a key nobody could find → "could not
+  // find signing key" and it never verified.
+  const senderKeyBytes = await wkdFetch(params.senderEmail);
+  if (!senderKeyBytes) throw new Error(`No WKD key for sender ${params.senderEmail} — publish key first`);
+  const senderPubKey = await openpgp.readKey({ binaryKey: senderKeyBytes });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const keyId8: Uint8Array = (senderPubKey.keyPacket.getKeyID() as any).write();
+
+  return signCleartextMessage(hem, signToken, selfSignKey.kid, keyId8, params.plainText);
 };
 
 /**
