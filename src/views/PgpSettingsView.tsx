@@ -186,7 +186,7 @@ function shortKid(kid: string): string {
 // ── Inner view ────────────────────────────────────────────────────────────────
 
 function PgpSettingsInner() {
-  const { url, hem, listToken, connected, unlocked, disconnect, authorize } = useHsm();
+  const { url, hem, listToken, unlocked, disconnect, authorize } = useHsm();
   const account = useUserAccount();
 
   const [urlModalOpen, setUrlModalOpen] = useState(false);
@@ -224,6 +224,27 @@ function PgpSettingsInner() {
     setKeyservers([...DEFAULT_KEYSERVERS]);
     setKeyserversText(DEFAULT_KEYSERVERS.join('\n'));
   }, []);
+
+  // Live reachability of the HSM device: while this view is open, poll /api/system/status
+  // every 4s and show Online/Offline. Independent of Unlocked/Locked (the session state).
+  const [hsmOnline, setHsmOnline] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!url) { setHsmOnline(null); return undefined; }
+    let cancelled = false;
+    const base = url.replace(/\/+$/, '');
+    const ping = async (): Promise<void> => {
+      try {
+        // no-cors: we only care whether the device answers (reachability), not the body.
+        await fetch(`${base}/api/system/status`, { method: 'GET', mode: 'no-cors', signal: AbortSignal.timeout(3000) });
+        if (!cancelled) setHsmOnline(true);
+      } catch {
+        if (!cancelled) setHsmOnline(false);
+      }
+    };
+    void ping();
+    const id = setInterval(() => void ping(), 4000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [url]);
 
   const [selfKeys,    setSelfKeys]    = useState<KeyPair[]>([]);
   const [peerKeys,    setPeerKeys]    = useState<PeerKeyPair[]>([]);
@@ -540,9 +561,9 @@ function PgpSettingsInner() {
               <Icon icon="GlobeOutline" size="small" />
               HSM Connection
             </div>
-            <span style={S.badge(connected ? 'connected' : 'disconnected')}>
-              <span style={S.dot(connected)} />
-              {connected ? 'Connected' : 'Disconnected'}
+            <span style={S.badge(hsmOnline ? 'connected' : hsmOnline === false ? 'disconnected' : 'locked')}>
+              <span style={S.dot(!!hsmOnline, hsmOnline === false ? undefined : hsmOnline ? undefined : '#744210')} />
+              {hsmOnline === null ? 'Checking…' : hsmOnline ? 'Online' : 'Offline'}
             </span>
           </div>
           <div style={S.sectionBody}>
@@ -714,7 +735,7 @@ function PgpSettingsInner() {
           <div style={S.sectionHeader}>
             <div style={S.sectionTitle}>
               <Icon icon="PeopleOutline" size="small" />
-              Peer Keys
+              Trusted Peer Keys
             </div>
           </div>
           <div style={S.sectionBody}>
