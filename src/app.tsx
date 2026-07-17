@@ -3,8 +3,8 @@ import * as openpgp from 'openpgp';
 import { addRoute, registerFunctions } from '@zextras/carbonio-shell-ui';
 import { HsmProvider, _singleton, decodeDescr } from './store/HsmContext';
 import { patchWebCrypto } from './lib/webcrypto-patch';
-import { wkdFetch, wkdLookupParse } from './lib/wkd-fetch';
-import { keyserverFetch, keyserverFetchByKeyId } from './lib/keyservers';
+import { wkdFetch, wkdLookupParse, parseKeyInfo } from './lib/wkd-fetch';
+import { keyserverFetch, keyserverFetchByKeyId, keyserverFetchBinary } from './lib/keyservers';
 import { getPgpPrefs } from './lib/pgp-prefs';
 import { PgpSettingsView } from './views/PgpSettingsView';
 
@@ -224,21 +224,30 @@ type RecipientKeyStatus = 'trusted' | 'mismatch' | 'available' | 'unavailable';
 async function recipientKeyStatus(email: string): Promise<RecipientKeyStatus> {
   const peer = (await getTrustedPeers()).get(email.toLowerCase());
   if (peer && (peer.kidSign || peer.kidEcdh)) {
-    // Trusted peer — pin: the live WKD key must still match the key stored in the HSM.
+    // Trusted peer — pin: a live published key must still match the key stored in the HSM.
+    // The peer may have been imported from WKD OR from a keyserver (VKS), and a domain can
+    // even publish a different key to each, so compare against BOTH sources and trust if the
+    // HSM key still matches EITHER. Pinning against WKD only gave a false "mismatch" for a
+    // peer imported from a keyserver whose WKD key differs.
     try {
       const hemRaw = await getPeerHemRaw(email, peer);
-      const wkd = await wkdLookupParse(email);
       // Pin on the PRIMARY (signing) key only — that is the identity. The ECDH subkey is
       // bound to it by a signature (an attacker can't forge that), and it may be legitimately
       // rotated, so comparing it would give false mismatches. Mirrors the PGP panel's check.
-      const ok = peer.kidSign
-        ? bytesEqual(hemRaw.sign, wkd.signRaw32)
-        : bytesEqual(hemRaw.ecdh, wkd.ecdhRaw32);
-      dlog('trusted-check:', email, '| hemSign=', hemRaw.sign?.length, 'wkdSign=', wkd.signRaw32?.length, '| match=', ok);
+      const mine = peer.kidSign ? hemRaw.sign : hemRaw.ecdh;
+      const published: Uint8Array[] = [];
+      try { const wkd = await wkdLookupParse(email); published.push(peer.kidSign ? wkd.signRaw32 : wkd.ecdhRaw32); }
+      catch (e) { dlog('trusted-check: no WKD key for', email, '-', e instanceof Error ? e.message : e); }
+      try { const ks = await keyserverFetchBinary(email); if (ks) { const info = await parseKeyInfo(email, ks.bytes); published.push(peer.kidSign ? info.signRaw32 : info.ecdhRaw32); } }
+      catch (e) { dlog('trusted-check: no keyserver key for', email, '-', e instanceof Error ? e.message : e); }
+      if (!published.length) {
+        // Can't fetch any live key to compare — don't silently trust a pinned key we can't re-verify.
+        return 'unavailable';
+      }
+      const ok = published.some((p) => bytesEqual(mine, p));
+      dlog('trusted-check:', email, '| hemSign=', mine?.length, '| sources=', published.length, '| match=', ok);
       return ok ? 'trusted' : 'mismatch';
     } catch {
-      // Can't fetch the live key to compare — we can't safely encrypt to a pinned key
-      // we can't re-verify. Report unavailable rather than silently trusting.
       return 'unavailable';
     }
   }
