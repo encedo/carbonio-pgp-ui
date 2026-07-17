@@ -21,9 +21,12 @@ src/
     KeygenModal.tsx              ← Generate Ed25519+X25519 keys on HSM + WKD publish
     WkdImportModal.tsx           ← WKD lookup → import peer key to HSM
   views/
-    PgpSettingsView.tsx          ← Main settings panel: HSM card, My Keys, Peer Keys
+    PgpSettingsView.tsx          ← Settings: HSM card, My Keys, Trusted Peer Keys, Preferences, Keyservers
   lib/
     wkd-fetch.ts                 ← WKD HTTP lookup + pure OpenPGP binary parser + fingerprint
+    keyservers.ts                ← VKS (keys.openpgp.org) lookup by-email / by-keyid
+    vks-publish.ts               ← Publish own cert to keys.openpgp.org (VKS upload + verify)
+    pgp-prefs.ts                 ← User preferences in localStorage (contract with mails-ui)
     webcrypto-patch.ts           ← Patch globalThis.crypto before openpgp.js init
   types/
     hem.d.ts                     ← HEM SDK TypeScript declarations
@@ -53,11 +56,18 @@ ssh root@mailserver 'sudo bash /tmp/install-pgp-ui.sh --reregister'
 
 | Section | Actions |
 |---------|---------|
-| **HSM Connection** | Enter URL, connect, unlock with password, lock, refresh |
-| **My Keys** | List own key pairs, WKD publish/fingerprint status, Publish / Rotate / Revoke |
-| **Peer Keys** | Import peer public keys from WKD, WKD obsolete check, Remove |
-| **Mail Compose** | Sign-only and Sign+Encrypt buttons (via carbonio-mails-ui bridge) |
-| **Mail Read** | Decrypt button, signature verification badge, auto-unlock modal |
+| **HSM Connection** | Enter URL, connect, unlock with password, lock, refresh; live Online/Offline status (ping `/api/system/status`) |
+| **My Keys** | List own key pairs, WKD publish/fingerprint status, Publish (WKD) / Publish to keys.openpgp.org (VKS) / Rotate / Revoke |
+| **Trusted Peer Keys** | Import peer public keys from WKD, WKD obsolete check, Remove |
+| **Keyservers** | Manage the VKS keyserver list (default `keys.openpgp.org`), account-synced |
+| **Mail Compose** | Sign-only and Sign+Encrypt buttons; recipient status badge (TRUSTED / available / key-mismatch); attach-own-key |
+| **Mail Read** | Decrypt button, signature verification badge, RFC 3156 multipart/signed verification, auto-unlock modal |
+
+**Outbound signing** — with the `rfc3156Sign` preference (default on) a signed message is
+built client-side as a proper RFC 3156 `multipart/signed` (keeps HTML; native signature badge
+in Thunderbird/ProtonMail) and delivered byte-exact via FileUploadServlet + `SendMsg aid`,
+the only Carbonio send path that does not re-serialise (and thus break) a detached signature.
+With the preference off — or for BCC — it falls back to an inline cleartext signature.
 
 ---
 
@@ -67,10 +77,14 @@ ssh root@mailserver 'sudo bash /tmp/install-pgp-ui.sh --reregister'
 |--------|------|---------|
 | `window.__encedoPgpGetHsm` | `() => HsmState` | Read HSM connection state |
 | `window.__encedoPgpCheckWkd` | `(email) => Promise<boolean>` | Check WKD key availability |
-| `window.__encedoPgpSignOnly` | `(PgpSendParams) => Promise<string>` | Sign message, return armored cleartext |
+| `window.__encedoPgpSignOnly` | `(PgpSendParams) => Promise<string>` | Sign message, return armored cleartext (inline fallback) |
+| `window.__encedoPgpBuildSignedEml` | `(PgpSignedEmlParams) => Promise<string>` | Build a full RFC 3156 multipart/signed raw .eml (HSM-signed) |
 | `window.__encedoPgpEncryptAndSign` | `(PgpSendParams) => Promise<string>` | Encrypt+sign, return armored PGP MESSAGE |
 | `window.__encedoPgpDecrypt` | `(PgpDecryptParams) => Promise<PgpDecryptResult>` | Decrypt/verify received message |
+| `window.__encedoPgpVerifyDetached` | `(VerifyDetachedParams) => Promise<{valid,signerEmail,html}>` | Verify an inbound RFC 3156 detached signature (issuer-keyID lookup) |
+| `window.__encedoPgpRecipientStatus` | `(email) => Promise<'trusted'\|'available'\|'mismatch'\|'unavailable'>` | Recipient key status for the composer badge |
 | `window.__encedoPgpRequestUnlock` | `(onUnlocked: () => void) => void` | Open unlock modal, call callback after |
+| `window.__encedoPgpOpenSettings` | `() => void` | Navigate to the PGP settings route (unlock when modal unavailable) |
 
 ---
 
@@ -102,11 +116,14 @@ Set in **Settings → OpenPGP → Preferences**, stored in `localStorage` and re
 `carbonio-mails-ui` (same origin, separate bundle). The keys are the contract between
 `src/lib/pgp-prefs.ts` here and `src/commons/pgp-prefs.ts` in the mails-ui fork.
 
-| Key | Effect |
-|-----|--------|
-| `pgp.pref.alwaysSign` | Signing is switched on in every new composer, once the HSM is unlocked |
-| `pgp.pref.alwaysEncrypt` | Encryption is switched on as soon as every recipient has a key (WKD or imported) |
-| `pgp.pref.autoDecrypt` | Encrypted messages are decrypted on open, without clicking **Decrypt** |
+| Key | Default | Effect |
+|-----|---------|--------|
+| `pgp.pref.alwaysSign` | off | Signing is switched on in every new composer, once the HSM is unlocked |
+| `pgp.pref.alwaysEncrypt` | off | Encryption is switched on as soon as every recipient has a key (WKD or imported) |
+| `pgp.pref.autoDecrypt` | off | Encrypted messages are decrypted on open, without clicking **Decrypt** |
+| `pgp.pref.wildcard` | off | Hide recipient key IDs (throw-keyids); allows encrypted BCC but Thunderbird/RNP can't decrypt |
+| `pgp.pref.attachOwnKey` | on | Attach the sender's public key so recipients can verify without looking it up |
+| `pgp.pref.rfc3156Sign` | on | Sign as RFC 3156 `multipart/signed` (keeps HTML); off = inline cleartext |
 
 An explicit click on the Sign / Encrypt button in the composer always wins over the
 preference for the rest of that composer's life.
