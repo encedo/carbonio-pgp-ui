@@ -226,24 +226,30 @@ function PgpSettingsInner() {
   }, []);
 
   // Live reachability of the HSM device: while this view is open, poll /api/system/status
-  // every 4s and show Online/Offline. Independent of Unlocked/Locked (the session state).
+  // and show Online/Offline (independent of Unlocked/Locked). Asymmetric cadence: poll fast
+  // (5s) while offline so plugging the USB device in shows Online quickly, and slow (10s)
+  // once online — a device being unplugged is rare and non-urgent.
   const [hsmOnline, setHsmOnline] = useState<boolean | null>(null);
   useEffect(() => {
     if (!url) { setHsmOnline(null); return undefined; }
     let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
     const base = url.replace(/\/+$/, '');
     const ping = async (): Promise<void> => {
+      let online = false;
       try {
         // no-cors: we only care whether the device answers (reachability), not the body.
         await fetch(`${base}/api/system/status`, { method: 'GET', mode: 'no-cors', signal: AbortSignal.timeout(3000) });
-        if (!cancelled) setHsmOnline(true);
+        online = true;
       } catch {
-        if (!cancelled) setHsmOnline(false);
+        online = false;
       }
+      if (cancelled) return;
+      setHsmOnline(online);
+      timer = setTimeout(() => void ping(), online ? 10000 : 5000);
     };
     void ping();
-    const id = setInterval(() => void ping(), 4000);
-    return () => { cancelled = true; clearInterval(id); };
+    return () => { cancelled = true; clearTimeout(timer); };
   }, [url]);
 
   const [selfKeys,    setSelfKeys]    = useState<KeyPair[]>([]);
