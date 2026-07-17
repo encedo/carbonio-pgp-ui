@@ -27,6 +27,13 @@ export interface PgpPrefs {
    * wildcard on) minimises the metadata the message leaks.
    */
   attachOwnKey: boolean;
+  /**
+   * Sign as RFC 3156 multipart/signed (built client-side, delivered byte-exact via
+   * upload+SendMsg aid) instead of inline cleartext. ON by default — it keeps HTML and
+   * produces a proper PGP/MIME signature that Thunderbird/Proton show natively. Off falls
+   * back to the inline cleartext text/plain signature.
+   */
+  rfc3156Sign: boolean;
 }
 
 export const PGP_PREF_KEYS: Record<keyof PgpPrefs, string> = {
@@ -35,6 +42,7 @@ export const PGP_PREF_KEYS: Record<keyof PgpPrefs, string> = {
   autoDecrypt:   'pgp.pref.autoDecrypt',
   wildcard:      'pgp.pref.wildcard',
   attachOwnKey:  'pgp.pref.attachOwnKey',
+  rfc3156Sign:   'pgp.pref.rfc3156Sign',
 };
 
 export const DEFAULT_PGP_PREFS: PgpPrefs = {
@@ -43,6 +51,7 @@ export const DEFAULT_PGP_PREFS: PgpPrefs = {
   autoDecrypt:   false,
   wildcard:      false,
   attachOwnKey:  true,
+  rfc3156Sign:   true,
 };
 
 export function getPgpPrefs(): PgpPrefs {
@@ -54,6 +63,7 @@ export function getPgpPrefs(): PgpPrefs {
       wildcard:      localStorage.getItem(PGP_PREF_KEYS.wildcard)      === 'true',
       // Default ON: only an explicit 'false' disables it.
       attachOwnKey:  localStorage.getItem(PGP_PREF_KEYS.attachOwnKey)  !== 'false',
+      rfc3156Sign:   localStorage.getItem(PGP_PREF_KEYS.rfc3156Sign)   !== 'false',
     };
   } catch {
     return { ...DEFAULT_PGP_PREFS };

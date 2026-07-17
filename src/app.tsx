@@ -559,6 +559,161 @@ export type PgpSendParams = {
   });
 };
 
+export type PgpSignedEmlParams = {
+  senderEmail: string;
+  senderName?: string;
+  to: Array<{ email: string; name?: string }>;
+  cc?: Array<{ email: string; name?: string }>;
+  subject: string;
+  plainText: string;
+  richText: string;
+  attachments?: PgpAttachment[];   // signed (in clear) inside the multipart/signed body
+  inlineImages?: PgpInlineImage[]; // embedded as data: URIs in the HTML
+};
+
+/**
+ * Build a complete RFC 3156 multipart/signed message (raw RFC822), signed via the HSM.
+ *
+ * Returns the full .eml (headers + body). mails-ui uploads it to FileUploadServlet and
+ * sends it with `SendMsg <m aid="…"/>`, which delivers the bytes verbatim (only the top
+ * header block — Date, Message-ID-if-absent — is touched; the MIME body is byte-exact).
+ * That is the ONLY Carbonio send path that preserves a detached signature — the ordinary
+ * mp-tree SendMsg re-serialises the visible MIME and breaks the signature. See the
+ * `carbonio-soap-send-model` note.
+ *
+ * The signed part uses base64 Content-Transfer-Encoding on the text parts so arbitrarily
+ * long lines (e.g. data: inline images) survive transport and the signed bytes are stable.
+ * The signature is a detached binary (type 0x00) signature — the same HSM primitive the
+ * encrypt+sign path uses — over the exact canonical (CRLF) bytes of the signed entity.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(window as any).__encedoPgpBuildSignedEml = async (params: PgpSignedEmlParams, callSecret?: unknown): Promise<string> => {
+  requireSecret(callSecret);
+  const { hem, listToken } = _singleton.state;
+  if (!hem || !listToken) throw new Error('HSM not connected');
+  if (_singleton.userEmails.size > 0 && !_singleton.userEmails.has(params.senderEmail)) {
+    throw new Error(`Unauthorized: senderEmail does not match logged-in user`);
+  }
+
+  const { buildHsmSignaturePkt } = await getPgp();
+
+  const allKeys = await hem.searchKeys(listToken, 'ETSPGP:');
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const selfSignKey = allKeys.find((k: any) => { const d = decodeDescr(k); return d?.role === 'self' && d?.keyType === 'sign' && d?.email === params.senderEmail; });
+  if (!selfSignKey) throw new Error(`No PGP sign key found for ${params.senderEmail}`);
+  const signToken = await authorizeScope(`keymgmt:use:${selfSignKey.kid}`);
+
+  // keyId8 from the WKD cert — authoritative, so the signature's issuer keyID matches the
+  // key recipients fetch from WKD (same rationale as the sign-only / encrypt+sign paths).
+  const senderKeyBytes = await wkdFetch(params.senderEmail);
+  if (!senderKeyBytes) throw new Error(`No WKD key for sender ${params.senderEmail} — publish key first`);
+  const senderPubKey = await openpgp.readKey({ binaryKey: senderKeyBytes });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const keyId8: Uint8Array = (senderPubKey.keyPacket.getKeyID() as any).write();
+
+  const rb = (): string => Array.from(crypto.getRandomValues(new Uint8Array(12))).map((b) => b.toString(16).padStart(2, '0')).join('');
+  const toCrlf = (s: string): string => s.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
+  const wrap76 = (b64: string): string => (b64.replace(/\s/g, '').match(/.{1,76}/g) ?? []).join('\r\n');
+  const b64utf8 = (s: string): string => wrap76(btoa(unescape(encodeURIComponent(s))));
+  const sanitizeName = (n: string): string => n.replace(/["\r\n]/g, '_');
+  // RFC 2047 encoded-word for non-ASCII header values (subject / display names).
+  const encHdr = (s: string): string => (/[^\x00-\x7F]/.test(s) ? `=?utf-8?B?${btoa(unescape(encodeURIComponent(s)))}?=` : s);
+  const addr = (a: { email: string; name?: string }): string => (a.name ? `${encHdr(a.name)} <${a.email}>` : a.email);
+
+  // Inline images → data: URIs in the HTML (portable; no multipart/related / cid resolution).
+  let richHtml = params.richText;
+  for (const img of params.inlineImages ?? []) {
+    const dataUri = `data:${img.contentType || 'application/octet-stream'};base64,${img.base64.replace(/\s/g, '')}`;
+    richHtml = richHtml.split(`cid:${img.contentId}`).join(dataUri);
+  }
+
+  const altB = rb();
+  const alternative = [
+    `Content-Type: multipart/alternative; boundary="${altB}"`,
+    '',
+    `--${altB}`,
+    'Content-Type: text/plain; charset=utf-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+    b64utf8(params.plainText),
+    `--${altB}`,
+    'Content-Type: text/html; charset=utf-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+    b64utf8(richHtml),
+    `--${altB}--`,
+  ].join('\r\n');
+
+  // Optional real attachments (signed in clear) + own public key → wrap in multipart/mixed.
+  const attachments = params.attachments ?? [];
+  const extraParts: string[] = [];
+  if (getPgpPrefs().attachOwnKey) {
+    const selfName = `OpenPGP_${senderPubKey.getKeyID().toHex().toUpperCase()}.asc`;
+    extraParts.push([
+      `Content-Type: application/pgp-keys; name="${selfName}"`,
+      `Content-Disposition: attachment; filename="${selfName}"`,
+      'Content-Description: OpenPGP public key',
+      '',
+      senderPubKey.armor(),
+    ].join('\r\n'));
+  }
+
+  let signedContent = alternative;
+  if (attachments.length > 0 || extraParts.length > 0) {
+    const mixedB = rb();
+    const attachmentParts = attachments.map((a) => [
+      `Content-Type: ${a.contentType || 'application/octet-stream'}; name="${sanitizeName(a.filename)}"`,
+      'Content-Transfer-Encoding: base64',
+      `Content-Disposition: attachment; filename="${sanitizeName(a.filename)}"`,
+      '',
+      wrap76(a.base64),
+    ].join('\r\n'));
+    const allParts = [alternative, ...attachmentParts, ...extraParts];
+    signedContent = [
+      `Content-Type: multipart/mixed; boundary="${mixedB}"`,
+      '',
+      ...allParts.map((p) => `--${mixedB}\r\n${p}`),
+      `--${mixedB}--`,
+    ].join('\r\n');
+  }
+  // Canonicalise the whole signed entity to CRLF — this is the byte-exact input to the
+  // signature AND what we place verbatim in the message (openpgp's armor() uses LF).
+  signedContent = toCrlf(signedContent);
+
+  const { sigPkt } = await buildHsmSignaturePkt(hem, signToken, selfSignKey.kid, keyId8, signedContent);
+  const armoredSig = toCrlf((await openpgp.readSignature({ binarySignature: sigPkt })).armor());
+
+  const sigB = rb();
+  const body = [
+    `--${sigB}`,
+    signedContent,
+    `--${sigB}`,
+    'Content-Type: application/pgp-signature; name="OpenPGP_signature.asc"',
+    'Content-Description: OpenPGP digital signature',
+    'Content-Disposition: attachment; filename="OpenPGP_signature.asc"',
+    '',
+    armoredSig,
+    `--${sigB}--`,
+    '',
+  ].join('\r\n');
+
+  const domain = params.senderEmail.split('@')[1] ?? 'localhost';
+  const headers = [
+    `From: ${params.senderName ? `${encHdr(params.senderName)} <${params.senderEmail}>` : params.senderEmail}`,
+    `To: ${params.to.map(addr).join(', ')}`,
+    ...((params.cc ?? []).length ? [`Cc: ${(params.cc ?? []).map(addr).join(', ')}`] : []),
+    `Subject: ${encHdr(params.subject)}`,
+    `Message-ID: <${rb()}${rb().slice(0, 8)}@${domain}>`,
+    'MIME-Version: 1.0',
+    `Content-Type: multipart/signed; micalg="pgp-sha256"; protocol="application/pgp-signature"; boundary="${sigB}"`,
+  ].join('\r\n');
+
+  dlog('buildSignedEml:', params.senderEmail, '| to=', params.to.length, 'cc=', (params.cc ?? []).length,
+    '| attachments=', attachments.length, '| inlineImages=', (params.inlineImages ?? []).length,
+    '| signedContent bytes=', signedContent.length);
+  return `${headers}\r\n\r\n${body}`;
+};
+
 /**
  * Extract displayable HTML from a decrypted MIME plaintext.
  * Handles nested multipart, base64 and quoted-printable transfer encodings.

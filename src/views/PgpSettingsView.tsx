@@ -880,6 +880,18 @@ function PgpSettingsInner() {
                   &quot;hide recipients&quot; — leaks the least metadata.
                 </div>
               </div>
+              <div>
+                <Checkbox
+                  label="Sign as PGP/MIME (RFC 3156)"
+                  value={prefs.rfc3156Sign}
+                  onClick={() => togglePref('rfc3156Sign', !prefs.rfc3156Sign)}
+                />
+                <div style={{ ...S.muted, marginLeft: 30 }}>
+                  Signs as a proper multipart/signed message (keeps HTML formatting; Thunderbird
+                  and ProtonMail show a native signature badge). On by default. Turning it off
+                  falls back to a plain-text inline signature. BCC always uses the inline path.
+                </div>
+              </div>
             </div>
           </div>
         </div>
