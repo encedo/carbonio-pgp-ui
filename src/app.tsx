@@ -277,6 +277,51 @@ function requireSecret(provided: unknown): void {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (window as any).__encedoPgpRefreshPeers = () => { clearPeerCaches(); };
 
+/**
+ * Verify an inbound RFC 3156 multipart/signed message (e.g. from Thunderbird): a DETACHED
+ * signature over the exact canonical bytes of the signed MIME part. Verify-only, no HSM.
+ * The caller (mails-ui) passes the byte-exact signed part (base64) + the armored signature +
+ * the sender address; we fetch the sender's public key (WKD → keyserver) and verify.
+ */
+interface VerifyDetachedParams { signedB64: string; armoredSignature: string; senderEmail: string; }
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(window as any).__encedoPgpVerifyDetached = async (params: VerifyDetachedParams, callSecret?: unknown): Promise<{ valid: boolean | null; signerEmail: string | null; html: string }> => {
+  requireSecret(callSecret);
+  const { signedB64, armoredSignature, senderEmail } = params;
+  // The signed part is itself a MIME (sub)tree — render it for display regardless of the
+  // signature outcome, reusing the same extractor as the decrypt path.
+  const signedText = (() => { try { return new TextDecoder().decode(Uint8Array.from(atob(signedB64), (c) => c.charCodeAt(0))); } catch { return ''; } })();
+  const html = signedText ? extractHtmlFromMime(signedText) : '';
+  if (!senderEmail) return { valid: null, signerEmail: null, html };
+
+  // Fetch the signer's key (WKD first, then configured keyservers).
+  let keyBytes = await wkdFetch(senderEmail);
+  if (!keyBytes) {
+    const armored = await keyserverFetch(senderEmail);
+    if (armored) keyBytes = (await openpgp.readKey({ armoredKey: armored })).write();
+  }
+  if (!keyBytes) { dlog('verifyDetached: no key for', senderEmail); return { valid: null, signerEmail: senderEmail, html }; }
+
+  let senderPubKey: openpgp.PublicKey;
+  try { senderPubKey = await readValidatedWkdKey(keyBytes, senderEmail, { requireEncryptionKey: false }); }
+  catch (e) { dlog('verifyDetached: key rejected:', e instanceof Error ? e.message : e); return { valid: null, signerEmail: senderEmail, html }; }
+
+  try {
+    const signedBytes = Uint8Array.from(atob(signedB64), (c) => c.charCodeAt(0));
+    const message = await openpgp.createMessage({ binary: signedBytes });
+    const signature = await openpgp.readSignature({ armoredSignature });
+    const result = await openpgp.verify({ message, signature, verificationKeys: [senderPubKey] });
+    const sig = result.signatures[0];
+    let valid: boolean | null = null;
+    try { valid = sig ? await sig.verified : null; } catch { valid = false; }
+    dlog('verifyDetached:', senderEmail, '| signedBytes=', signedBytes.length, '| valid=', valid);
+    return { valid, signerEmail: senderEmail, html };
+  } catch (e) {
+    dlog('verifyDetached: verify error:', e instanceof Error ? e.message : e);
+    return { valid: false, signerEmail: senderEmail, html };
+  }
+};
+
 // Navigate the Carbonio SPA to the PGP section (this module's primary-bar route).
 // Used by mails-ui when a Decrypt is attempted before the HSM is connected and the
 // in-place unlock modal isn't available (the PGP view isn't mounted after a reload).
