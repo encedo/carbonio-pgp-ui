@@ -4,7 +4,7 @@ import { addRoute, registerFunctions } from '@zextras/carbonio-shell-ui';
 import { HsmProvider, _singleton, decodeDescr } from './store/HsmContext';
 import { patchWebCrypto } from './lib/webcrypto-patch';
 import { wkdFetch, wkdLookupParse } from './lib/wkd-fetch';
-import { keyserverFetch } from './lib/keyservers';
+import { keyserverFetch, keyserverFetchByKeyId } from './lib/keyservers';
 import { getPgpPrefs } from './lib/pgp-prefs';
 import { PgpSettingsView } from './views/PgpSettingsView';
 
@@ -294,27 +294,49 @@ interface VerifyDetachedParams { signedB64: string; armoredSignature: string; se
   const html = signedText ? extractHtmlFromMime(signedText) : '';
   if (!senderEmail) return { valid: null, signerEmail: null, html };
 
-  // Fetch the signer's key (WKD first, then configured keyservers).
-  let keyBytes = await wkdFetch(senderEmail);
-  if (!keyBytes) {
-    const armored = await keyserverFetch(senderEmail);
-    if (armored) keyBytes = (await openpgp.readKey({ armoredKey: armored })).write();
-  }
-  if (!keyBytes) { dlog('verifyDetached: no key for', senderEmail); return { valid: null, signerEmail: senderEmail, html }; }
+  // Read the signature first so we know WHICH key issued it. The signer may have signed
+  // with a key that differs from what a by-email lookup returns for their address (e.g. a
+  // Thunderbird key vs the HSM/WKD key), so we must verify against the issuer's key, not
+  // just "a key for this address".
+  let signature: openpgp.Signature;
+  try { signature = await openpgp.readSignature({ armoredSignature }); }
+  catch (e) { dlog('verifyDetached: bad signature:', e instanceof Error ? e.message : e); return { valid: null, signerEmail: senderEmail, html }; }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const issuerId = (signature.packets?.[0] as any)?.issuerKeyID?.toHex?.() ?? null;
 
-  let senderPubKey: openpgp.PublicKey;
-  try { senderPubKey = await readValidatedWkdKey(keyBytes, senderEmail, { requireEncryptionKey: false }); }
-  catch (e) { dlog('verifyDetached: key rejected:', e instanceof Error ? e.message : e); return { valid: null, signerEmail: senderEmail, html }; }
+  // Gather candidate keys: the by-email key (WKD → keyserver) and, if it doesn't match the
+  // issuer, the exact issuer key by keyID from the keyservers.
+  const candidates: openpgp.PublicKey[] = [];
+  const addArmored = async (armored: string | null): Promise<void> => {
+    if (!armored) return;
+    try { candidates.push(await openpgp.readKey({ armoredKey: armored })); } catch { /* skip */ }
+  };
+  const wkdBytes = await wkdFetch(senderEmail);
+  if (wkdBytes) {
+    try { candidates.push(await readValidatedWkdKey(wkdBytes, senderEmail, { requireEncryptionKey: false })); }
+    catch (e) { dlog('verifyDetached: WKD key rejected:', e instanceof Error ? e.message : e); }
+  }
+  await addArmored(await keyserverFetch(senderEmail));
+  const matches = (k: openpgp.PublicKey): boolean =>
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    !!issuerId && k.getKeys().some((sub: any) => sub.getKeyID().toHex() === issuerId);
+  if (issuerId && !candidates.some(matches)) await addArmored(await keyserverFetchByKeyId(issuerId));
+
+  const keyIds = candidates.map((k) => k.getKeyID().toHex()).join(',');
+  const signer = issuerId ? candidates.find(matches) : candidates[0];
+  if (!signer) {
+    dlog('verifyDetached: no key matching issuer', issuerId, '| candidates=', keyIds || '(none)');
+    return { valid: null, signerEmail: senderEmail, html };
+  }
 
   try {
     const signedBytes = Uint8Array.from(atob(signedB64), (c) => c.charCodeAt(0));
     const message = await openpgp.createMessage({ binary: signedBytes });
-    const signature = await openpgp.readSignature({ armoredSignature });
-    const result = await openpgp.verify({ message, signature, verificationKeys: [senderPubKey] });
+    const result = await openpgp.verify({ message, signature, verificationKeys: [signer] });
     const sig = result.signatures[0];
     let valid: boolean | null = null;
-    try { valid = sig ? await sig.verified : null; } catch { valid = false; }
-    dlog('verifyDetached:', senderEmail, '| signedBytes=', signedBytes.length, '| valid=', valid);
+    try { valid = sig ? await sig.verified : null; } catch (e) { dlog('verifyDetached: sig.verified threw:', e instanceof Error ? e.message : e); valid = false; }
+    dlog('verifyDetached:', senderEmail, '| issuer=', issuerId, '| signedBytes=', signedBytes.length, '| valid=', valid);
     return { valid, signerEmail: senderEmail, html };
   } catch (e) {
     dlog('verifyDetached: verify error:', e instanceof Error ? e.message : e);

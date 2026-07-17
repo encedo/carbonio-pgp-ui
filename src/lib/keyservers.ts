@@ -83,3 +83,28 @@ export async function keyserverFetch(email: string): Promise<string | null> {
   cache.set(key, null);
   return null;
 }
+
+/**
+ * Fetch an armored public key by its 64-bit key ID (or full fingerprint) from the
+ * configured VKS keyservers. Used when the signer signed with a key that differs from
+ * whatever the by-email lookup returns (e.g. a Thunderbird key vs the HSM/WKD key for
+ * the same address) — we must verify against the key that actually issued the signature.
+ */
+export async function keyserverFetchByKeyId(keyIdHex: string): Promise<string | null> {
+  const id = keyIdHex.replace(/^0x/i, '').toUpperCase();
+  if (!/^[0-9A-F]{16}([0-9A-F]{24})?$/.test(id)) return null;
+  const path = id.length === 40 ? `by-fingerprint/${id}` : `by-keyid/${id}`;
+  for (const base of getKeyservers()) {
+    try {
+      const url = `${base.replace(/\/+$/, '')}/vks/v1/${path}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
+      if (res.ok) {
+        const armored = await res.text();
+        if (armored.includes('BEGIN PGP PUBLIC KEY BLOCK')) return armored;
+      }
+    } catch {
+      /* try next server */
+    }
+  }
+  return null;
+}
