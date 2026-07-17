@@ -108,3 +108,42 @@ export async function keyserverFetchByKeyId(keyIdHex: string): Promise<string | 
   }
   return null;
 }
+
+/** De-armor an ASCII-armored PGP block to its binary packets (no openpgp.js). */
+function dearmor(armored: string): Uint8Array {
+  const m = armored.match(/-----BEGIN PGP[^-]*-----([\s\S]*?)-----END PGP[^-]*-----/);
+  if (!m) throw new Error('not an ASCII-armored PGP key');
+  // Keep only base64 payload lines: drop blank lines, "Header: value" lines, and the
+  // "=CRC" checksum line.
+  const b64 = m[1]
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !l.includes(':') && !l.startsWith('='))
+    .join('');
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+/**
+ * Fetch a recipient's public key by email from the keyservers and return it as binary
+ * packets plus the server that answered — for importing a peer key when WKD has none.
+ */
+export async function keyserverFetchBinary(email: string): Promise<{ bytes: Uint8Array; server: string } | null> {
+  for (const base of getKeyservers()) {
+    try {
+      const url = `${base.replace(/\/+$/, '')}/vks/v1/by-email/${encodeURIComponent(email)}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
+      if (res.ok) {
+        const armored = await res.text();
+        if (armored.includes('BEGIN PGP PUBLIC KEY BLOCK')) {
+          return { bytes: dearmor(armored), server: base.replace(/^https?:\/\//, '').replace(/\/+$/, '') };
+        }
+      }
+    } catch {
+      /* try next server */
+    }
+  }
+  return null;
+}

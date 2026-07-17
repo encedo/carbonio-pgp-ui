@@ -34,7 +34,7 @@ src/
     HsmPasswordModal.tsx       ← unlock modal with "save for session" checkbox
     HsmUrlModal.tsx            ← HSM URL input → localStorage
     KeygenModal.tsx            ← keygen flow + WKD publish offer
-    WkdImportModal.tsx         ← WKD lookup → show key info → confirm → import to HSM
+    WkdImportModal.tsx         ← peer key lookup (WKD, then keyserver fallback) → show info+source → import to HSM
   views/
     PgpSettingsView.tsx        ← main settings panel (HSM status, My Keys, Peer Keys)
                                   registers window.__encedoPgpRequestUnlock

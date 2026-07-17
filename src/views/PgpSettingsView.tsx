@@ -755,7 +755,7 @@ function PgpSettingsInner() {
                 />
               </div>
               <Button
-                label="⬇ Import from WKD"
+                label="⬇ Import from keyserver"
                 color="primary"
                 onClick={handleImportClick}
                 disabled={!unlocked || !isValidEmail(peerEmailInput.trim())}

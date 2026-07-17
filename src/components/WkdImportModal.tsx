@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Button, Text } from '@zextras/carbonio-design-system';
 import { useHsm, encodeDescr } from '../store/HsmContext';
-import { wkdLookupParse, WkdKeyInfo } from '../lib/wkd-fetch';
+import { wkdLookupParse, parseKeyInfo, WkdKeyInfo } from '../lib/wkd-fetch';
+import { keyserverFetchBinary } from '../lib/keyservers';
 import { ModalDialog } from './ModalDialog';
 
 const WARN_BOX: React.CSSProperties = {
@@ -51,6 +52,7 @@ export function WkdImportModal({ open, email, onClose, onImported, existingKey }
   const { hem, authorize } = useHsm();
   const [phase,   setPhase]  = useState<Phase>('fetching');
   const [keyInfo, setKeyInfo] = useState<WkdKeyInfo | null>(null);
+  const [source,  setSource]  = useState<string | null>(null);
   const [error,   setError]   = useState<string | null>(null);
   const domain = email.split('@')[1] ?? email;
 
@@ -58,11 +60,27 @@ export function WkdImportModal({ open, email, onClose, onImported, existingKey }
     if (!open) return;
     setPhase('fetching');
     setKeyInfo(null);
+    setSource(null);
     setError(null);
 
+    // Try WKD first (authoritative for the domain); if the domain publishes no key there,
+    // fall back to the configured keyservers (VKS, e.g. keys.openpgp.org). Either way we show
+    // WHERE the key came from before importing it to the HSM.
     wkdLookupParse(email)
-      .then(info => { setKeyInfo(info); setPhase('found'); })
-      .catch((e: unknown) => { setError(e instanceof Error ? e.message : String(e)); setPhase('error'); });
+      .then((info) => { setKeyInfo(info); setSource(`Web Key Directory · openpgpkey.${domain}`); setPhase('found'); })
+      .catch(async (wkdErr: unknown) => {
+        try {
+          const ks = await keyserverFetchBinary(email);
+          if (!ks) throw wkdErr;
+          const info = await parseKeyInfo(email, ks.bytes);
+          setKeyInfo(info);
+          setSource(`Keyserver · ${ks.server}`);
+          setPhase('found');
+        } catch (e) {
+          setError(e instanceof Error ? e.message : String(e));
+          setPhase('error');
+        }
+      });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, email]);
 
@@ -94,15 +112,15 @@ export function WkdImportModal({ open, email, onClose, onImported, existingKey }
   return (
     <ModalDialog open={open} onClose={busy ? undefined : onClose} width={520}>
       <div style={{ padding: 24 }}>
-        <Text size="large" weight="bold">Import Peer Key from WKD</Text>
+        <Text size="large" weight="bold">Import Peer Key</Text>
         <div style={{ marginTop: 16 }}>
 
           {phase === 'fetching' && (
             <>
-              <Text>Looking up key for <strong>{email}</strong> via Web Key Directory…</Text>
+              <Text>Looking up key for <strong>{email}</strong>…</Text>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: '#718096', fontSize: 13, marginTop: 16 }}>
                 <Spinner />
-                Fetching from openpgpkey.{domain}…
+                Web Key Directory (openpgpkey.{domain}), then keyservers…
               </div>
             </>
           )}
@@ -110,6 +128,10 @@ export function WkdImportModal({ open, email, onClose, onImported, existingKey }
           {phase === 'found' && keyInfo && (
             <>
               <Text>Found PGP key for <strong>{email}</strong>. Import to HSM?</Text>
+              <div style={{ marginTop: 12 }}>
+                <div style={LABEL}>Source</div>
+                <span style={MONO}>{source}</span>
+              </div>
               <div style={{ marginTop: 12 }}>
                 <div style={LABEL}>Fingerprint</div>
                 <span style={MONO}>{keyInfo.fingerprint}</span>

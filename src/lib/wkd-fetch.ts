@@ -187,7 +187,16 @@ export interface WkdKeyInfo {
 export async function wkdLookupParse(email: string): Promise<WkdKeyInfo> {
   const keyBytes = await wkdFetch(email);
   if (!keyBytes) throw new Error(`No WKD key found for ${email}`);
+  return parseKeyInfo(email, keyBytes);
+}
 
+/**
+ * Parse a binary OpenPGP public key (as fetched from WKD or a keyserver) into the raw
+ * Ed25519 + X25519 material the HSM import needs. Pure byte parsing — no openpgp.js.
+ * Throws if the key is not an Ed25519 primary + X25519 subkey (the only shape the HSM
+ * can hold as a peer key).
+ */
+export async function parseKeyInfo(email: string, keyBytes: Uint8Array): Promise<WkdKeyInfo> {
   const packets = parsePackets(keyBytes);
   let signRaw32: Uint8Array | null = null;
   let ecdhRaw32:  Uint8Array | null = null;
