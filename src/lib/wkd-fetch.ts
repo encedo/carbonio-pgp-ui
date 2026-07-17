@@ -86,6 +86,7 @@ const TAG_PUBLIC_KEY    = 6;
 const TAG_PUBLIC_SUBKEY = 14;
 const ALGO_EDDSA = 22;
 const ALGO_ECDH  = 18;
+const ALGO_ECDSA = 19; // NIST-curve signing key (P-256/384/521)
 
 // Supported OIDs (byte sequences after the OID length byte in the packet body)
 // Ed25519:  1.3.6.1.4.1.11591.15.1  — 9 bytes
@@ -231,7 +232,11 @@ export async function parseKeyInfo(email: string, keyBytes: Uint8Array): Promise
 
   if (!signRaw32 || !primaryBody) {
     const algo = primaryAlgo !== null ? (ALGO_NAMES[primaryAlgo] ?? `algorithm #${primaryAlgo}`) : 'an unknown algorithm';
-    throw new Error(`Cannot import ${email}: this key uses ${algo}. Encedo HSM only stores Ed25519 + X25519 (Curve25519) peer keys, so RSA, ECDSA and NIST-curve keys can't be imported.`);
+    if (primaryAlgo === ALGO_ECDSA) {
+      // NIST ECC (ECDSA) — the HEM supports these curves, but importing them here is not wired yet.
+      throw new Error(`Cannot import ${email}: this is an ECDSA (NIST curve) key. NIST P-256/P-384/P-521 import is not enabled in this build yet.`);
+    }
+    throw new Error(`Cannot import ${email}: this key uses ${algo}, which is not an elliptic-curve key. Encedo HSM stores ECC keys only (EdDSA/ECDSA/ECDH), so RSA, DSA and ElGamal keys can't be imported.`);
   }
   if (!ecdhRaw32 || !ecdhBody) throw new Error(`Cannot import ${email}: the key has no X25519 (Curve25519) encryption subkey that the HSM can store.`);
 

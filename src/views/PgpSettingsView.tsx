@@ -6,9 +6,9 @@ import { decodeDescr, useHsm, DESCR_PREFIX, DESCR, encodeDescr } from '../store/
 import { patchWebCrypto } from '../lib/webcrypto-patch';
 import { getDisplayNameForEmail } from '../lib/account-identity';
 import { getPgpPrefs, setPgpPref, PgpPrefs } from '../lib/pgp-prefs';
-import { getKeyservers, setKeyservers, DEFAULT_KEYSERVERS } from '../lib/keyservers';
+import { getKeyservers, setKeyservers, DEFAULT_KEYSERVERS, keyserverFetchBinary } from '../lib/keyservers';
 import { publishToVks } from '../lib/vks-publish';
-import { wkdLookupParse, clearWkdCache } from '../lib/wkd-fetch';
+import { wkdLookupParse, parseKeyInfo, clearWkdCache, WkdKeyInfo } from '../lib/wkd-fetch';
 import { HsmUrlModal } from '../components/HsmUrlModal';
 import { HsmPasswordModal } from '../components/HsmPasswordModal';
 import { WkdImportModal } from '../components/WkdImportModal';
@@ -31,6 +31,7 @@ interface PeerKeyPair {
   kidEcdh: string;
   fingerprint?: string;
   wkdStatus?: 'ok' | 'obsolete' | 'no-wkd';
+  source?: string; // where the published key was resolved from (WKD / keyserver)
 }
 
 // ── Styles ────────────────────────────────────────────────────────────────────
@@ -313,24 +314,42 @@ function PgpSettingsInner() {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (window as any).__encedoPgpRefreshPeers?.();
 
-      // Fetch WKD info for peer keys: fingerprint + compare with HSM key to detect obsolete
+      // Resolve each peer's published key — WKD first (authoritative for the domain), then the
+      // configured keyservers (VKS) — to show its fingerprint + source and flag an obsolete
+      // import (published key no longer matching the HSM-pinned key).
       for (const peer of peers) {
         (async () => {
+          let info: WkdKeyInfo | null = null;
+          let source = '';
           try {
-            const info = await wkdLookupParse(peer.email);
+            info = await wkdLookupParse(peer.email);
+            source = `WKD · openpgpkey.${peer.email.split('@')[1] ?? ''}`;
+          } catch {
+            try {
+              const ks = await keyserverFetchBinary(peer.email);
+              if (ks) { info = await parseKeyInfo(peer.email, ks.bytes); source = `Keyserver · ${ks.server}`; }
+            } catch { /* no published key anywhere */ }
+          }
+          if (!info) {
+            setPeerKeys(prev => prev.map(p => p.email === peer.email ? { ...p, wkdStatus: 'no-wkd' } : p));
+            return;
+          }
+          const resolved = info;
+          try {
             const useToken = await authorize(`keymgmt:use:${peer.kidSign}`);
             const hsmResult = await hem!.getPubKey(useToken, peer.kidSign);
             const hsmB64 = typeof hsmResult === 'string' ? hsmResult : (hsmResult as unknown as { pubkey: string }).pubkey;
             const hsmBytes = Uint8Array.from(atob(hsmB64), c => c.charCodeAt(0));
-            const match = hsmBytes.length === info.signRaw32.length &&
-              hsmBytes.every((b, i) => b === info.signRaw32[i]);
+            const match = hsmBytes.length === resolved.signRaw32.length &&
+              hsmBytes.every((b, i) => b === resolved.signRaw32[i]);
             setPeerKeys(prev => prev.map(p => p.email === peer.email
-              ? { ...p, fingerprint: info.fingerprint, wkdStatus: match ? 'ok' : 'obsolete' }
+              ? { ...p, fingerprint: resolved.fingerprint, source, wkdStatus: match ? 'ok' : 'obsolete' }
               : p
             ));
           } catch {
+            // Published key found but the HSM key couldn't be read to compare — still show fp+source.
             setPeerKeys(prev => prev.map(p => p.email === peer.email
-              ? { ...p, wkdStatus: 'no-wkd' }
+              ? { ...p, fingerprint: resolved.fingerprint, source }
               : p
             ));
           }
@@ -768,7 +787,7 @@ function PgpSettingsInner() {
                   <thead>
                     <tr>
                       <th style={S.th}>Email</th>
-                      <th style={S.th}>Fingerprint (WKD)</th>
+                      <th style={S.th}>Fingerprint</th>
                       <th style={S.th}>HSM KID (sign)</th>
                       <th style={S.th}>HSM KID (ecdh)</th>
                       <th style={S.th}>Status</th>
@@ -779,13 +798,20 @@ function PgpSettingsInner() {
                     {peerKeys.map(kp => (
                       <tr className="pgp-tr" key={kp.email}>
                         <td style={S.td}>{kp.email}</td>
-                        <td style={{ ...S.td, ...S.mono, fontSize: 11 }}>{kp.fingerprint ?? '…'}</td>
+                        <td style={{ ...S.td, ...S.mono, fontSize: 11 }}>
+                          {kp.fingerprint ?? '…'}
+                          {kp.source && (
+                            <div style={{ fontFamily: 'system-ui, sans-serif', fontSize: 10, color: '#a0aec0', marginTop: 2 }}>
+                              {kp.source}
+                            </div>
+                          )}
+                        </td>
                         <td style={{ ...S.td, ...S.mono }}>{kp.kidSign ? shortKid(kp.kidSign) : '—'}</td>
                         <td style={{ ...S.td, ...S.mono }}>{kp.kidEcdh ? shortKid(kp.kidEcdh) : '—'}</td>
                         <td style={S.td}>
                           {kp.wkdStatus === 'obsolete' && <span style={S.pill('mismatch')}>⚠ Obsolete</span>}
                           {kp.wkdStatus === 'ok'       && <span style={S.pill('published')}>✓ Current</span>}
-                          {kp.wkdStatus === 'no-wkd'   && <span style={S.pill('local')}>No WKD</span>}
+                          {kp.wkdStatus === 'no-wkd'   && <span style={S.pill('local')}>Not published</span>}
                           {!kp.wkdStatus               && <span style={S.pill('checking')}>Checking…</span>}
                         </td>
                         <td style={S.tdActions}>
