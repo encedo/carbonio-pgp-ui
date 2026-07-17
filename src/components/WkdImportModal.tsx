@@ -97,8 +97,10 @@ export function WkdImportModal({ open, email, onClose, onImported, existingKey }
       const impToken = await authorize('keymgmt:imp');
       const signLabel = email.slice(0, 32);
       const ecdhLabel = `${email.slice(0, 28)}/E`;
-      await hem.importPublicKey(impToken, signLabel, 'ED25519',    keyInfo.signRaw32, peerSignDescr(email));
-      await hem.importPublicKey(impToken, ecdhLabel, 'CURVE25519', keyInfo.ecdhRaw32, peerEcdhDescr(email));
+      // Key type comes from the parsed key (Ed25519 / NIST P-256/384/521 / secp256k1), not
+      // hard-coded — the HEM stores each curve under its own type string.
+      await hem.importPublicKey(impToken, signLabel, keyInfo.signType, keyInfo.signRaw32, peerSignDescr(email));
+      await hem.importPublicKey(impToken, ecdhLabel, keyInfo.ecdhType, keyInfo.ecdhRaw32, peerEcdhDescr(email));
       setPhase('done');
       onImported();
     } catch (e: unknown) {
@@ -131,6 +133,10 @@ export function WkdImportModal({ open, email, onClose, onImported, existingKey }
               <div style={{ marginTop: 12 }}>
                 <div style={LABEL}>Source</div>
                 <span style={MONO}>{source}</span>
+              </div>
+              <div style={{ marginTop: 12 }}>
+                <div style={LABEL}>Algorithm</div>
+                <span style={MONO}>{keyInfo.curveLabel}</span>
               </div>
               <div style={{ marginTop: 12 }}>
                 <div style={LABEL}>Fingerprint</div>

@@ -133,21 +133,50 @@ function parsePackets(data: Uint8Array): Array<{ tag: number; body: Uint8Array }
   return packets;
 }
 
-// Extract raw 32-byte key material from a v4 public key/subkey packet body.
-// Returns null if the packet is not an Ed25519 or X25519 key.
-function extractRaw32(body: Uint8Array): Uint8Array | null {
+// NIST + secp256k1 curve OIDs (as they appear in an OpenPGP ECDSA/ECDH packet, without the
+// 1-byte length prefix) → HEM key type + human label. The HEM stores these as SECP*R1 / SECP256K1.
+const NIST_CURVES: Array<{ oid: Uint8Array; type: string; label: string }> = [
+  { oid: new Uint8Array([0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07]), type: 'SECP256R1', label: 'NIST P-256' },
+  { oid: new Uint8Array([0x2b, 0x81, 0x04, 0x00, 0x22]),                   type: 'SECP384R1', label: 'NIST P-384' },
+  { oid: new Uint8Array([0x2b, 0x81, 0x04, 0x00, 0x23]),                   type: 'SECP521R1', label: 'NIST P-521' },
+  { oid: new Uint8Array([0x2b, 0x81, 0x04, 0x00, 0x0a]),                   type: 'SECP256K1', label: 'secp256k1' },
+];
+
+// Read the first MPI value from a v4 ECC packet body (the public point). Returns the raw
+// value bytes (no 2-byte bit-count prefix). For 25519 this is 0x40||<32>; for NIST/k1 it is
+// the SEC1 uncompressed point 0x04||X||Y.
+function extractMpiValue(body: Uint8Array): Uint8Array | null {
   if (body.length < 8 || body[0] !== 4) return null;
-  const algo = body[5];
-  if (algo !== ALGO_EDDSA && algo !== ALGO_ECDH) return null;
   const oidLen = body[6];
-  const mpiOff = 7 + oidLen; // offset to MPI (bit-count + data)
-  if (mpiOff + 2 >= body.length) return null;
-  // MPI: 2 bytes bit-count, then ceil(bits/8) bytes
-  // For native-prefixed 32-byte key: bit-count=263, data=0x40 + 32 bytes
-  const mpiData = body.slice(mpiOff + 2);
-  const start = mpiData[0] === 0x40 ? 1 : 0; // strip native point prefix
-  if (mpiData.length < start + 32) return null;
-  return mpiData.slice(start, start + 32);
+  const mpiOff = 7 + oidLen;
+  if (mpiOff + 2 > body.length) return null;
+  const bits = (body[mpiOff] << 8) | body[mpiOff + 1];
+  const nbytes = (bits + 7) >> 3;
+  const start = mpiOff + 2;
+  if (start + nbytes > body.length) return null;
+  return body.slice(start, start + nbytes);
+}
+
+// Resolve an ECC public key/subkey packet to { HEM type, curve label, import bytes }.
+// import bytes = what the HEM import expects: the 32-byte value for Ed25519/X25519 (native
+// 0x40 prefix stripped) or the SEC1 uncompressed point (0x04||X||Y) for NIST / secp256k1.
+// Returns null for non-ECC or unsupported curves (brainpool, Ed448/X448 v6, …).
+function resolveEccKey(body: Uint8Array): { hemType: string; label: string; bytes: Uint8Array } | null {
+  const algo = body[5];
+  const mpi = extractMpiValue(body);
+  if (!mpi) return null;
+  if (algo === ALGO_EDDSA && oidMatches(body, OID_ED25519)) {
+    const raw = mpi[0] === 0x40 ? mpi.slice(1) : mpi;
+    return raw.length === 32 ? { hemType: 'ED25519', label: 'Ed25519', bytes: raw } : null;
+  }
+  if (algo === ALGO_ECDH && oidMatches(body, OID_X25519)) {
+    const raw = mpi[0] === 0x40 ? mpi.slice(1) : mpi;
+    return raw.length === 32 ? { hemType: 'CURVE25519', label: 'Curve25519', bytes: raw } : null;
+  }
+  if (algo === ALGO_ECDSA || algo === ALGO_ECDH) {
+    for (const c of NIST_CURVES) if (oidMatches(body, c.oid)) return { hemType: c.type, label: c.label, bytes: mpi };
+  }
+  return null;
 }
 
 export function toHex(bytes: Uint8Array): string {
@@ -177,11 +206,14 @@ async function fingerprintV4(body: Uint8Array): Promise<string> {
 
 export interface WkdKeyInfo {
   email: string;
-  signRaw32: Uint8Array;
-  ecdhRaw32: Uint8Array;
-  signHex: string;        // first 16 chars grouped for display
+  signRaw32: Uint8Array;   // raw sign key bytes for HSM import (32B for Ed25519; SEC1 point for NIST/k1)
+  ecdhRaw32: Uint8Array;   // raw ECDH key bytes for HSM import (32B for X25519; SEC1 point for NIST/k1)
+  signType: string;        // HEM key type for the sign key: ED25519 | SECP256R1 | SECP384R1 | SECP521R1 | SECP256K1
+  ecdhType: string;        // HEM key type for the ECDH key: CURVE25519 | SECP256R1 | …
+  curveLabel: string;      // human curve name for display (e.g. "Ed25519", "NIST P-256")
+  signHex: string;         // first 16 chars grouped for display
   ecdhHex: string;
-  fingerprint: string;    // primary key fingerprint (40-char grouped hex)
+  fingerprint: string;     // primary key fingerprint (40-char grouped hex)
   ecdhFingerprint: string; // ECDH subkey fingerprint (40-char grouped hex)
 }
 
@@ -192,10 +224,11 @@ export async function wkdLookupParse(email: string): Promise<WkdKeyInfo> {
 }
 
 /**
- * Parse a binary OpenPGP public key (as fetched from WKD or a keyserver) into the raw
- * Ed25519 + X25519 material the HSM import needs. Pure byte parsing — no openpgp.js.
- * Throws if the key is not an Ed25519 primary + X25519 subkey (the only shape the HSM
- * can hold as a peer key).
+ * Parse a binary OpenPGP public key (as fetched from WKD or a keyserver) into the raw key
+ * material + HEM key type the HSM import needs. Pure byte parsing — no openpgp.js.
+ * Supports the ECC curves the HEM can hold: Ed25519 + X25519, NIST P-256/P-384/P-521, and
+ * secp256k1 (a sign primary + an ECDH subkey). Throws a clear message for RSA/DSA/ElGamal
+ * or unsupported curves (brainpool, Ed448/X448 v6).
  */
 export async function parseKeyInfo(email: string, keyBytes: Uint8Array): Promise<WkdKeyInfo> {
   // OpenPGP public-key algorithm IDs (RFC 4880 §9.1 + later) → human names, for a clear
@@ -206,40 +239,39 @@ export async function parseKeyInfo(email: string, keyBytes: Uint8Array): Promise
   };
 
   const packets = parsePackets(keyBytes);
-  let signRaw32: Uint8Array | null = null;
-  let ecdhRaw32:  Uint8Array | null = null;
+  let sign: { hemType: string; label: string; bytes: Uint8Array } | null = null;
+  let ecdh: { hemType: string; label: string; bytes: Uint8Array } | null = null;
   let primaryBody: Uint8Array | null = null;
   let ecdhBody:    Uint8Array | null = null;
   let primaryAlgo: number | null = null;
 
   for (const pkt of packets) {
-    if (pkt.tag === TAG_PUBLIC_KEY) {
-      if (primaryAlgo === null) primaryAlgo = pkt.body[5];
-      if (pkt.body[5] === ALGO_EDDSA) {
-        if (!oidMatches(pkt.body, OID_ED25519))
-          throw new Error(`Cannot import ${email}: the key uses an unsupported EdDSA curve — the HSM only stores Ed25519 keys.`);
-        signRaw32 = extractRaw32(pkt.body);
-        primaryBody = pkt.body;
-      }
+    // The first public-key packet is the primary (signing) key.
+    if (pkt.tag === TAG_PUBLIC_KEY && primaryBody === null) {
+      primaryBody = pkt.body;
+      primaryAlgo = pkt.body[5];
+      if (primaryAlgo === ALGO_EDDSA || primaryAlgo === ALGO_ECDSA) sign = resolveEccKey(pkt.body);
     }
-    if (pkt.tag === TAG_PUBLIC_SUBKEY && pkt.body[5] === ALGO_ECDH) {
-      if (!oidMatches(pkt.body, OID_X25519))
-        throw new Error(`Cannot import ${email}: the key uses an unsupported ECDH curve — the HSM only stores X25519 (Curve25519) keys.`);
-      ecdhRaw32 = extractRaw32(pkt.body);
-      ecdhBody  = pkt.body;
+    // First ECDH subkey we can resolve is the encryption key.
+    if (pkt.tag === TAG_PUBLIC_SUBKEY && pkt.body[5] === ALGO_ECDH && !ecdh) {
+      const r = resolveEccKey(pkt.body);
+      if (r) { ecdh = r; ecdhBody = pkt.body; }
     }
   }
 
-  if (!signRaw32 || !primaryBody) {
+  if (!sign || !primaryBody) {
+    if (primaryAlgo === ALGO_EDDSA || primaryAlgo === ALGO_ECDSA) {
+      throw new Error(`Cannot import ${email}: the signing key uses an unsupported curve. Supported: Ed25519 and NIST P-256/P-384/P-521 (also secp256k1).`);
+    }
     const algo = primaryAlgo !== null ? (ALGO_NAMES[primaryAlgo] ?? `algorithm #${primaryAlgo}`) : 'an unknown algorithm';
-    if (primaryAlgo === ALGO_ECDSA) {
-      // NIST ECC (ECDSA) — the HEM supports these curves, but importing them here is not wired yet.
-      throw new Error(`Cannot import ${email}: this is an ECDSA (NIST curve) key. NIST P-256/P-384/P-521 import is not enabled in this build yet.`);
-    }
-    throw new Error(`Cannot import ${email}: this key uses ${algo}, which is not an elliptic-curve key. Encedo HSM stores ECC keys only (EdDSA/ECDSA/ECDH), so RSA, DSA and ElGamal keys can't be imported.`);
+    throw new Error(`Cannot import ${email}: this key uses ${algo}, which is not an elliptic-curve key. Encedo HSM stores ECC keys only, so RSA, DSA and ElGamal keys can't be imported.`);
   }
-  if (!ecdhRaw32 || !ecdhBody) throw new Error(`Cannot import ${email}: the key has no X25519 (Curve25519) encryption subkey that the HSM can store.`);
+  if (!ecdh || !ecdhBody) {
+    throw new Error(`Cannot import ${email}: no supported encryption (ECDH) subkey — need an X25519, NIST P-256/384/521 or secp256k1 ECDH subkey.`);
+  }
 
+  const signRaw32 = sign.bytes;
+  const ecdhRaw32 = ecdh.bytes;
   const [fingerprint, ecdhFingerprint] = await Promise.all([
     fingerprintV4(primaryBody),
     fingerprintV4(ecdhBody),
@@ -249,6 +281,9 @@ export async function parseKeyInfo(email: string, keyBytes: Uint8Array): Promise
     email,
     signRaw32,
     ecdhRaw32,
+    signType: sign.hemType,
+    ecdhType: ecdh.hemType,
+    curveLabel: sign.label,
     signHex: shortHex(signRaw32),
     ecdhHex: shortHex(ecdhRaw32),
     fingerprint,
