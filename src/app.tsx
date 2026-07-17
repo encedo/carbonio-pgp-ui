@@ -1016,45 +1016,104 @@ function signedBodyHtml(text: string): string {
   let plaintext: string;
 
   if (signerEmail) {
+    // Gather the sender's key from BOTH WKD and the keyservers (by email): a sender may sign
+    // with a key published to keys.openpgp.org that differs from their WKD key (e.g. a
+    // Thunderbird key vs the HSM/WKD key for the same address). Each candidate is validated to
+    // claim this address before we'd trust a "signature valid" badge.
+    const verificationKeys: openpgp.PublicKey[] = [];
+    const seenFp = new Set<string>();
+    const addValidated = async (bytes: Uint8Array | null | undefined, src: string): Promise<void> => {
+      if (!bytes) return;
+      try {
+        const vk = await readValidatedWkdKey(bytes, signerEmail, { requireEncryptionKey: false });
+        const fp = vk.getFingerprint();
+        if (seenFp.has(fp)) return;
+        seenFp.add(fp);
+        verificationKeys.push(vk);
+        dlog('verify: sender key validated (', src, ') | primary keyID=', vk.getKeyID().toHex(),
+          '| subkey IDs=', vk.getSubkeys().map((s) => s.getKeyID().toHex()));
+      } catch (e) {
+        dlog('verify: sender', src, 'key failed validation:', e instanceof Error ? e.message : e);
+      }
+    };
     const senderKeyBytes = await wkdFetch(signerEmail);
     dlog('verify: wkdFetch(', signerEmail, ') →', senderKeyBytes ? `${senderKeyBytes.length} bytes` : 'null (not found / CSP-blocked)');
-    // Validate the sender key claims this address before trusting a "signature valid" badge.
-    let verificationKeys: openpgp.PublicKey[] = [];
-    if (!senderKeyBytes) {
+    await addValidated(senderKeyBytes, 'WKD');
+    const armoredKs = await keyserverFetch(signerEmail);
+    if (armoredKs) {
+      try { await addValidated((await openpgp.readKey({ armoredKey: armoredKs })).write(), 'keyserver'); }
+      catch (e) { dlog('verify: keyserver key parse failed:', e instanceof Error ? e.message : e); }
+    }
+    if (!verificationKeys.length) {
       // eslint-disable-next-line no-console
-      console.warn('[pgp] verify: could not fetch sender WKD key for', signerEmail, '— signature cannot be verified (shown as unverified, not invalid)');
-    } else {
-      try {
-        const vk = await readValidatedWkdKey(senderKeyBytes, signerEmail, { requireEncryptionKey: false });
-        verificationKeys = [vk];
-        dlog('verify: sender key validated | primary keyID=', vk.getKeyID().toHex(),
-          '| subkey IDs=', vk.getSubkeys().map(s => s.getKeyID().toHex()));
-      } catch (e) {
-        // eslint-disable-next-line no-console
-        console.warn('[pgp] verify: sender WKD key failed validation:', e instanceof Error ? e.message : e);
-      }
+      console.warn('[pgp] verify: no sender key for', signerEmail, '(WKD or keyserver) — signature shown as unverified, not invalid');
     }
     const decrypted = await openpgp.decrypt({ message, sessionKeys: [sessionKey], verificationKeys });
     plaintext = decrypted.data as string;
     dlog('verify: decrypted OK | plaintext bytes=', plaintext.length, '| signatures in message=', decrypted.signatures.length, '| verificationKeys=', verificationKeys.length);
-    if (verificationKeys.length) {
-      const sig = decrypted.signatures[0];
-      if (!sig) {
-        sigValid = null;
-        // eslint-disable-next-line no-console
-        console.warn('[pgp] verify: no signature packet in decrypted message');
-      } else {
-        try {
-          await sig.verified;
-          sigValid = true;
-          dlog('verify: SIGNATURE VALID ✓ | keyID=', (sig.keyID as any)?.toHex?.());
-        } catch (e) {
+    const sig = decrypted.signatures[0];
+    if (!sig) {
+      sigValid = null;
+      // eslint-disable-next-line no-console
+      console.warn('[pgp] verify: no signature packet in decrypted message');
+    } else {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const issuer: string = (sig.keyID as any)?.toHex?.() ?? '';
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const haveIssuer = verificationKeys.some((k) => k.getKeys().some((s: any) => s.getKeyID().toHex() === issuer));
+      try {
+        await sig.verified;
+        sigValid = true;
+        dlog('verify: SIGNATURE VALID ✓ | keyID=', issuer);
+      } catch (e) {
+        // The message may be signed by a key that differs from the sender's WKD key (e.g. a
+        // Thunderbird key vs the HSM key for the same address). Fetch the exact signing key by
+        // its issuer keyID from the keyservers (validated to claim the sender address) and
+        // re-verify against it. "No key for the issuer anywhere" is unverified (null), not
+        // invalid (false) — only a genuine mismatch against the issuer's own key is invalid.
+        if (issuer && !haveIssuer) {
+          const armored = await keyserverFetchByKeyId(issuer);
+          let byIdKey: openpgp.PublicKey | null = null;
+          if (armored) {
+            try {
+              const kb = (await openpgp.readKey({ armoredKey: armored })).write();
+              byIdKey = await readValidatedWkdKey(kb, signerEmail, { requireEncryptionKey: false });
+            } catch (ve) {
+              dlog('verify: keyserver key for issuer', issuer, 'rejected:', ve instanceof Error ? ve.message : ve);
+            }
+          }
+          if (!byIdKey) {
+            sigValid = null;
+            // eslint-disable-next-line no-console
+            console.warn('[pgp] verify: no key claiming', signerEmail, 'for issuer keyID', issuer, '— unverified (not invalid)');
+          } else {
+            try {
+              const d2 = await openpgp.decrypt({ message, sessionKeys: [sessionKey], verificationKeys: [...verificationKeys, byIdKey] });
+              plaintext = d2.data as string;
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const sig2 = d2.signatures.find((s) => ((s.keyID as any)?.toHex?.() ?? '') === issuer) ?? d2.signatures[0];
+              await sig2.verified;
+              sigValid = true;
+              dlog('verify: SIGNATURE VALID ✓ via keyserver | keyID=', issuer);
+            } catch (e2) {
+              sigValid = false;
+              // eslint-disable-next-line no-console
+              console.warn('[pgp] verify FAILED (issuer key from keyserver):', e2 instanceof Error ? e2.message : e2, '| keyID:', issuer);
+            }
+          }
+        } else if (!verificationKeys.length) {
+          // No sender key at all → cannot verify; unverified, not invalid.
+          sigValid = null;
+          // eslint-disable-next-line no-console
+          console.warn('[pgp] verify: no sender key available for issuer keyID', issuer, '— unverified');
+        } else {
+          // We DO have the issuer's key and it still failed → a genuine bad signature.
           sigValid = false;
           // eslint-disable-next-line no-console
           console.warn('[pgp] verify FAILED:', e instanceof Error ? e.message : e,
-            '| signature keyID:', (sig.keyID as any)?.toHex?.(),
-            '| fetched sender key IDs:', verificationKeys.map(k => k.getKeyID().toHex()),
-            '| sender subkey IDs:', verificationKeys.flatMap(k => k.getSubkeys().map(s => s.getKeyID().toHex())));
+            '| signature keyID:', issuer,
+            '| fetched sender key IDs:', verificationKeys.map((k) => k.getKeyID().toHex()),
+            '| sender subkey IDs:', verificationKeys.flatMap((k) => k.getSubkeys().map((s) => s.getKeyID().toHex())));
         }
       }
     }
