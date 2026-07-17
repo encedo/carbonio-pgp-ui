@@ -197,29 +197,43 @@ export async function wkdLookupParse(email: string): Promise<WkdKeyInfo> {
  * can hold as a peer key).
  */
 export async function parseKeyInfo(email: string, keyBytes: Uint8Array): Promise<WkdKeyInfo> {
+  // OpenPGP public-key algorithm IDs (RFC 4880 §9.1 + later) → human names, for a clear
+  // "can't import this key type" message. The HSM only stores Ed25519 + X25519 peer keys.
+  const ALGO_NAMES: Record<number, string> = {
+    1: 'RSA', 2: 'RSA', 3: 'RSA', 16: 'ElGamal', 17: 'DSA',
+    18: 'ECDH', 19: 'ECDSA', 20: 'ElGamal', 22: 'EdDSA', 23: 'X25519', 25: 'Ed25519',
+  };
+
   const packets = parsePackets(keyBytes);
   let signRaw32: Uint8Array | null = null;
   let ecdhRaw32:  Uint8Array | null = null;
   let primaryBody: Uint8Array | null = null;
   let ecdhBody:    Uint8Array | null = null;
+  let primaryAlgo: number | null = null;
 
   for (const pkt of packets) {
-    if (pkt.tag === TAG_PUBLIC_KEY && pkt.body[5] === ALGO_EDDSA) {
-      if (!oidMatches(pkt.body, OID_ED25519))
-        throw new Error(`Unsupported EdDSA curve in WKD key for ${email} (only Ed25519 is supported)`);
-      signRaw32 = extractRaw32(pkt.body);
-      primaryBody = pkt.body;
+    if (pkt.tag === TAG_PUBLIC_KEY) {
+      if (primaryAlgo === null) primaryAlgo = pkt.body[5];
+      if (pkt.body[5] === ALGO_EDDSA) {
+        if (!oidMatches(pkt.body, OID_ED25519))
+          throw new Error(`Cannot import ${email}: the key uses an unsupported EdDSA curve — the HSM only stores Ed25519 keys.`);
+        signRaw32 = extractRaw32(pkt.body);
+        primaryBody = pkt.body;
+      }
     }
     if (pkt.tag === TAG_PUBLIC_SUBKEY && pkt.body[5] === ALGO_ECDH) {
       if (!oidMatches(pkt.body, OID_X25519))
-        throw new Error(`Unsupported ECDH curve in WKD key for ${email} (only X25519 / Curve25519 is supported)`);
+        throw new Error(`Cannot import ${email}: the key uses an unsupported ECDH curve — the HSM only stores X25519 (Curve25519) keys.`);
       ecdhRaw32 = extractRaw32(pkt.body);
       ecdhBody  = pkt.body;
     }
   }
 
-  if (!signRaw32 || !primaryBody) throw new Error(`Ed25519 signing key not found in WKD response for ${email}`);
-  if (!ecdhRaw32 || !ecdhBody)   throw new Error(`X25519 ECDH key not found in WKD response for ${email}`);
+  if (!signRaw32 || !primaryBody) {
+    const algo = primaryAlgo !== null ? (ALGO_NAMES[primaryAlgo] ?? `algorithm #${primaryAlgo}`) : 'an unknown algorithm';
+    throw new Error(`Cannot import ${email}: this key uses ${algo}. Encedo HSM only stores Ed25519 + X25519 (Curve25519) peer keys, so RSA, ECDSA and NIST-curve keys can't be imported.`);
+  }
+  if (!ecdhRaw32 || !ecdhBody) throw new Error(`Cannot import ${email}: the key has no X25519 (Curve25519) encryption subkey that the HSM can store.`);
 
   const [fingerprint, ecdhFingerprint] = await Promise.all([
     fingerprintV4(primaryBody),
