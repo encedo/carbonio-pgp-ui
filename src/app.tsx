@@ -138,15 +138,39 @@ async function readValidatedWkdKey(
  * accepted just like an Ed25519/X25519 WKD key.
  */
 async function resolveRecipientKey(email: string): Promise<openpgp.PublicKey> {
+  // Gather published keys from both sources (WKD first, then keyservers).
+  const sources: Uint8Array[] = [];
   const wkd = await wkdFetch(email);
-  if (wkd) return readValidatedWkdKey(wkd, email);
-
+  if (wkd) sources.push(wkd);
   const armored = await keyserverFetch(email);
-  if (armored) {
-    const binaryKey = (await openpgp.readKey({ armoredKey: armored })).write();
-    return readValidatedWkdKey(binaryKey, email);
+  if (armored) { try { sources.push((await openpgp.readKey({ armoredKey: armored })).write()); } catch { /* skip */ } }
+  if (!sources.length) throw new Error(`No key found for ${email} (WKD or keyservers)`);
+
+  // If this address is a trusted peer, encrypt to the published key that matches the key you
+  // imported/pinned into the HSM — NOT simply the first source. Otherwise, when WKD and the
+  // keyserver serve different keys, we could encrypt to a different key than the one you trust
+  // (e.g. WKD serves a stale key while you imported the recipient's real key from a keyserver).
+  const peer = (await getTrustedPeers()).get(email.toLowerCase());
+  if (peer && (peer.kidSign || peer.kidEcdh)) {
+    try {
+      const hemRaw = await getPeerHemRaw(email, peer);
+      const mine = peer.kidSign ? hemRaw.sign : hemRaw.ecdh;
+      for (const bytes of sources) {
+        try {
+          const info = await parseKeyInfo(email, bytes);
+          const pub = peer.kidSign ? info.signRaw32 : info.ecdhRaw32;
+          if (bytesEqual(mine, pub)) { dlog('resolveRecipientKey: using trusted-peer-matching key for', email); return readValidatedWkdKey(bytes, email); }
+        } catch { /* try next source */ }
+      }
+      throw new Error(`The trusted key for ${email} is no longer published (WKD/keyserver now serve a different key). Re-import or remove the peer key before encrypting.`);
+    } catch (e) {
+      // Only a genuine "trusted key gone" is fatal; an HSM read hiccup falls back to source order.
+      if (e instanceof Error && e.message.startsWith('The trusted key')) throw e;
+      dlog('resolveRecipientKey: peer match unavailable, falling back to source order:', e instanceof Error ? e.message : e);
+    }
   }
-  throw new Error(`No key found for ${email} (WKD or keyservers)`);
+
+  return readValidatedWkdKey(sources[0], email);
 }
 
 /** True if a usable key for this address can be found via WKD or a configured keyserver. */
