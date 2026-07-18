@@ -34,6 +34,12 @@ export interface PgpPrefs {
    * back to the inline cleartext text/plain signature.
    */
   rfc3156Sign: boolean;
+  /**
+   * Encrypt the message Subject (protected headers / "memory hole"): the real subject is
+   * carried inside the encrypted body; the outer subject is a placeholder. OFF by default —
+   * like Thunderbird, some recipients don't support it (they'd see the placeholder).
+   */
+  encryptSubject: boolean;
 }
 
 export const PGP_PREF_KEYS: Record<keyof PgpPrefs, string> = {
@@ -43,6 +49,7 @@ export const PGP_PREF_KEYS: Record<keyof PgpPrefs, string> = {
   wildcard:      'pgp.pref.wildcard',
   attachOwnKey:  'pgp.pref.attachOwnKey',
   rfc3156Sign:   'pgp.pref.rfc3156Sign',
+  encryptSubject:'pgp.pref.encryptSubject',
 };
 
 export const DEFAULT_PGP_PREFS: PgpPrefs = {
@@ -52,6 +59,7 @@ export const DEFAULT_PGP_PREFS: PgpPrefs = {
   wildcard:      false,
   attachOwnKey:  true,
   rfc3156Sign:   true,
+  encryptSubject:false,
 };
 
 export function getPgpPrefs(): PgpPrefs {
@@ -64,6 +72,7 @@ export function getPgpPrefs(): PgpPrefs {
       // Default ON: only an explicit 'false' disables it.
       attachOwnKey:  localStorage.getItem(PGP_PREF_KEYS.attachOwnKey)  !== 'false',
       rfc3156Sign:   localStorage.getItem(PGP_PREF_KEYS.rfc3156Sign)   !== 'false',
+      encryptSubject:localStorage.getItem(PGP_PREF_KEYS.encryptSubject)=== 'true',
     };
   } catch {
     return { ...DEFAULT_PGP_PREFS };

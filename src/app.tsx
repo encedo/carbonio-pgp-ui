@@ -415,6 +415,7 @@ export type PgpSendParams = {
   richText: string;
   attachments?: PgpAttachment[];   // encrypted inside the message (encrypt+sign path)
   inlineImages?: PgpInlineImage[]; // cid: images embedded in a multipart/related
+  subject?: string;                // when set, embedded as an encrypted protected header
 };
 
 /**
@@ -561,8 +562,18 @@ export type PgpSendParams = {
     ].join('\r\n');
   }
 
+  // Protected headers ("memory hole", protected-headers="v1"): when subject encryption is on,
+  // embed the real Subject INSIDE the encrypted payload's root part so it never appears in
+  // clear on the wire/server. The outer message carries only a placeholder subject (set by
+  // mails-ui). The subject is inside the signed content too, so its integrity is protected.
+  if (params.subject) {
+    const enc2047 = (s: string): string => (/[^\x00-\x7F]/.test(s) ? `=?utf-8?B?${btoa(unescape(encodeURIComponent(s)))}?=` : s);
+    const nl = innerMime.indexOf('\r\n');
+    innerMime = `${innerMime.slice(0, nl)}; protected-headers="v1"\r\nSubject: ${enc2047(params.subject)}${innerMime.slice(nl)}`;
+  }
+
   dlog('encrypt: attachments=', attachments.length, '| inlineImages=', inlineImages.length, '| inlineEmbedded(data-uri)=', inlineEmbedded,
-    '| attachOwnKey=', extraParts.length > 0, '| inner MIME bytes=', innerMime.length,
+    '| attachOwnKey=', extraParts.length > 0, '| protectedSubject=', !!params.subject, '| inner MIME bytes=', innerMime.length,
     '| structure=', (attachments.length || extraParts.length) ? 'multipart/mixed' : 'multipart/alternative');
 
   // Build HSM signature packet (pure HSM, no openpgp.js inside rollup bundle)

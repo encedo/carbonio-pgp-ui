@@ -978,6 +978,19 @@ function PgpSettingsInner() {
                   falls back to a plain-text inline signature. BCC always uses the inline path.
                 </div>
               </div>
+              <div>
+                <Checkbox
+                  label="Encrypt message subjects"
+                  value={prefs.encryptSubject}
+                  onClick={() => togglePref('encryptSubject', !prefs.encryptSubject)}
+                />
+                <div style={{ ...S.muted, marginLeft: 30 }}>
+                  Hides the subject of encrypted messages (protected headers): the real subject
+                  travels inside the ciphertext, the visible subject becomes &quot;...&quot;. Off by
+                  default — like Thunderbird, some recipients don&apos;t support it and would only
+                  see the placeholder. Applies to encrypted mail only.
+                </div>
+              </div>
             </div>
           </div>
         </div>
