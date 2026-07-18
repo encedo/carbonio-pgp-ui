@@ -98,9 +98,12 @@ export function WkdImportModal({ open, email, onClose, onImported, existingKey }
       const signLabel = email.slice(0, 32);
       const ecdhLabel = `${email.slice(0, 28)}/E`;
       // Key type comes from the parsed key (Ed25519 / NIST P-256/384/521 / secp256k1), not
-      // hard-coded — the HEM stores each curve under its own type string.
-      await hem.importPublicKey(impToken, signLabel, keyInfo.signType, keyInfo.signRaw32, peerSignDescr(email));
-      await hem.importPublicKey(impToken, ecdhLabel, keyInfo.ecdhType, keyInfo.ecdhRaw32, peerEcdhDescr(email));
+      // hard-coded — the HEM stores each curve under its own type string. NIST (SECP*) keys
+      // additionally take a usage-constraint mode: signing key → ExDSA, encryption → ECDH
+      // (25519 types are single-purpose by construction, no mode).
+      const modeFor = (t: string, usage: 'ExDSA' | 'ECDH'): string | null => (t.startsWith('SECP') ? usage : null);
+      await hem.importPublicKey(impToken, signLabel, keyInfo.signType, keyInfo.signRaw32, peerSignDescr(email), modeFor(keyInfo.signType, 'ExDSA'));
+      await hem.importPublicKey(impToken, ecdhLabel, keyInfo.ecdhType, keyInfo.ecdhRaw32, peerEcdhDescr(email), modeFor(keyInfo.ecdhType, 'ECDH'));
       setPhase('done');
       onImported();
     } catch (e: unknown) {

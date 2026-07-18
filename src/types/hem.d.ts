@@ -37,7 +37,8 @@ interface HEMI {
     label: string,
     type: string,
     pubKeyBytes: Uint8Array,
-    descr?: string | null
+    descr?: string | null,
+    mode?: string | null
   ): Promise<{ kid: string }>;
 
   exdsaSignBytes(
@@ -83,7 +84,7 @@ declare module '*/hem-sdk.js' {
     searchKeys(token: string, descrBase64: string, offset?: number, limit?: number): Promise<HemKeyI[]>;
     getPubKey(token: string, kid: string): Promise<string>;
     createKeyPair(token: string, label: string, type: string, descr: string): Promise<{ kid: string }>;
-    importPublicKey(token: string, label: string, type: string, pubKeyBytes: Uint8Array, descr?: string | null): Promise<{ kid: string }>;
+    importPublicKey(token: string, label: string, type: string, pubKeyBytes: Uint8Array, descr?: string | null, mode?: string | null): Promise<{ kid: string }>;
     exdsaSignBytes(token: string, kid: string, data: Uint8Array, alg?: string, ctx?: string | null): Promise<string>;
     exdsaVerify(token: string, kid: string, data: Uint8Array, sig: string, alg?: string): Promise<boolean>;
     ecdh(token: string, kid: string, peerPubKeyBase64: string): Promise<string>;
@@ -110,7 +111,7 @@ declare module '*/hem-sdk.browser.js' {
     searchKeys(token: string, descrBase64: string, offset?: number, limit?: number): Promise<HemKeyI[]>;
     getPubKey(token: string, kid: string): Promise<string>;
     createKeyPair(token: string, label: string, type: string, descr: string): Promise<{ kid: string }>;
-    importPublicKey(token: string, label: string, type: string, pubKeyBytes: Uint8Array, descr?: string | null): Promise<{ kid: string }>;
+    importPublicKey(token: string, label: string, type: string, pubKeyBytes: Uint8Array, descr?: string | null, mode?: string | null): Promise<{ kid: string }>;
     exdsaSignBytes(token: string, kid: string, data: Uint8Array, alg?: string, ctx?: string | null): Promise<string>;
     exdsaVerify(token: string, kid: string, data: Uint8Array, sig: string, alg?: string): Promise<boolean>;
     ecdh(token: string, kid: string, peerPubKeyBase64: string): Promise<string>;

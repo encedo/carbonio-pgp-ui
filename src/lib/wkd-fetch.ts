@@ -158,8 +158,10 @@ function extractMpiValue(body: Uint8Array): Uint8Array | null {
 }
 
 // Resolve an ECC public key/subkey packet to { HEM type, curve label, import bytes }.
-// import bytes = what the HEM import expects: the 32-byte value for Ed25519/X25519 (native
-// 0x40 prefix stripped) or the SEC1 uncompressed point (0x04||X||Y) for NIST / secp256k1.
+// import bytes = what the HEM import expects (per the hem-api-tester reference): the raw
+// 32-byte value for Ed25519/X25519 (native 0x40 prefix stripped) or the COMPRESSED SEC1
+// point (0x02/0x03||X — 33/49/67 B) for NIST / secp256k1. OpenPGP certs carry the
+// uncompressed 0x04||X||Y form, so NIST points are compressed here (prefix from Y parity).
 // Returns null for non-ECC or unsupported curves (brainpool, Ed448/X448 v6, …).
 function resolveEccKey(body: Uint8Array): { hemType: string; label: string; bytes: Uint8Array } | null {
   const algo = body[5];
@@ -174,7 +176,16 @@ function resolveEccKey(body: Uint8Array): { hemType: string; label: string; byte
     return raw.length === 32 ? { hemType: 'CURVE25519', label: 'Curve25519', bytes: raw } : null;
   }
   if (algo === ALGO_ECDSA || algo === ALGO_ECDH) {
-    for (const c of NIST_CURVES) if (oidMatches(body, c.oid)) return { hemType: c.type, label: c.label, bytes: mpi };
+    for (const c of NIST_CURVES) {
+      if (!oidMatches(body, c.oid)) continue;
+      if (mpi[0] === 0x02 || mpi[0] === 0x03) return { hemType: c.type, label: c.label, bytes: mpi };
+      if (mpi[0] !== 0x04 || (mpi.length - 1) % 2 !== 0) return null;
+      const n = (mpi.length - 1) / 2;
+      const compressed = new Uint8Array(1 + n);
+      compressed[0] = (mpi[mpi.length - 1] & 1) === 0 ? 0x02 : 0x03; // parity of Y
+      compressed.set(mpi.slice(1, 1 + n), 1);
+      return { hemType: c.type, label: c.label, bytes: compressed };
+    }
   }
   return null;
 }
