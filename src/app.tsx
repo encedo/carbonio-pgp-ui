@@ -298,8 +298,15 @@ function requireSecret(provided: unknown): void {
   return _callSecret;
 };
 
+// Expose ONLY the safe connection flags — never the live `hem` instance (which holds the
+// cached derived keys and can sign/ecdh) nor the tokens. Returning the raw _singleton.state
+// let any script on the page do `__encedoPgpGetHsm().hem.exdsaSignBytes(...)`, bypassing the
+// call-secret. mails-ui only reads `unlocked` / `connected`.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-(window as any).__encedoPgpGetHsm = () => _singleton.state;
+(window as any).__encedoPgpGetHsm = () => {
+  const { connected, unlocked, url } = _singleton.state;
+  return { connected, unlocked, url };
+};
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (window as any).__encedoPgpCheckWkd = (email: string) => isRecipientKeyAvailable(email);
 // Richer per-recipient status for the composer: 'trusted' (key imported into the HSM),
