@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Checkbox, Icon, Input, Spinner, Text } from '@zextras/carbonio-design-system';
 // @ts-expect-error — carbonio-shell-ui types incomplete but this hook exists at runtime
 import { useUserAccount } from '@zextras/carbonio-shell-ui';
@@ -32,6 +32,31 @@ interface PeerKeyPair {
   fingerprint?: string;
   wkdStatus?: 'ok' | 'obsolete' | 'no-wkd';
   source?: string; // where the published key was resolved from (WKD / keyserver)
+}
+
+// Debug logger, mirrors app.tsx dlog (on by default; set window.__encedoPgpDebug=false to mute).
+function dlog(...args: unknown[]): void {
+  // eslint-disable-next-line no-console, @typescript-eslint/no-explicit-any
+  if ((window as any).__encedoPgpDebug !== false) console.log('[pgp]', ...args);
+}
+
+// Extract a numeric uptime from the HSM /api/system/status body, wherever it sits in the
+// object. Deep-searches for a key matching /uptime/ and returns its first numeric leaf, so
+// it works whether uptime is `uptime: <secs>` or an object like `uptime: { seconds, … }`.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function findUptime(body: any): number | null {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const firstNumber = (v: any): number | null => {
+    if (typeof v === 'number' && Number.isFinite(v)) return v;
+    if (v && typeof v === 'object') {
+      for (const x of Object.values(v)) { const n = firstNumber(x); if (n !== null) return n; }
+    }
+    return null;
+  };
+  if (body == null || typeof body !== 'object') return null;
+  for (const [k, v] of Object.entries(body)) if (/uptime/i.test(k)) { const n = firstNumber(v); if (n !== null) return n; }
+  for (const v of Object.values(body)) if (v && typeof v === 'object') { const n = findUptime(v); if (n !== null) return n; }
+  return null;
 }
 
 // ── Styles ────────────────────────────────────────────────────────────────────
@@ -230,23 +255,58 @@ function PgpSettingsInner() {
   // and show Online/Offline (independent of Unlocked/Locked). Asymmetric cadence: poll fast
   // (5s) while offline so plugging the USB device in shows Online quickly, and slow (10s)
   // once online — a device being unplugged is rare and non-urgent.
+  //
+  // The same poll also guards the unlocked session: /api/system/status carries the device
+  // uptime (a monotonic clock). If uptime jumps BACKWARDS the device rebooted (or a different
+  // device now answers), and if the device stops answering it was unplugged — in both cases
+  // the HSM lost our authorized state, so we lock (disconnect) and drop the token cache. This
+  // prevents acting on stale tokens after a HEM reset/unplug.
   const [hsmOnline, setHsmOnline] = useState<boolean | null>(null);
+  // Latest unlocked/disconnect for the polling loop, without making them effect deps (which
+  // would restart the timer on every state change).
+  const unlockedRef = useRef(unlocked);
+  unlockedRef.current = unlocked;
+  const disconnectRef = useRef(disconnect);
+  disconnectRef.current = disconnect;
   useEffect(() => {
     if (!url) { setHsmOnline(null); return undefined; }
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
-    const base = url.replace(/\/+$/, '');
+    let lastUptime: number | null = null;
+    let fails = 0;
+    let logged = false;
+    const statusUrl = `${url.replace(/\/+$/, '')}/api/system/status`;
     const ping = async (): Promise<void> => {
       let online = false;
+      let rebooted = false;
       try {
-        // no-cors: we only care whether the device answers (reachability), not the body.
-        await fetch(`${base}/api/system/status`, { method: 'GET', mode: 'no-cors', signal: AbortSignal.timeout(3000) });
+        // Read the body (CORS) so we can watch the device uptime and detect a reboot.
+        const res = await fetch(statusUrl, { method: 'GET', signal: AbortSignal.timeout(3000) });
         online = true;
+        const body = await res.json().catch(() => null);
+        const uptime = findUptime(body);
+        if (!logged) { logged = true; dlog('hsm status:', body, '| uptime=', uptime); }
+        if (uptime !== null) {
+          if (lastUptime !== null && uptime + 5 < lastUptime) rebooted = true; // clock went backwards
+          lastUptime = uptime;
+        }
       } catch {
-        online = false;
+        // Some firmware may not send CORS on /status — fall back to a reachability-only probe
+        // so the Online badge stays correct even when we can't read the uptime body.
+        try { await fetch(statusUrl, { method: 'GET', mode: 'no-cors', signal: AbortSignal.timeout(3000) }); online = true; }
+        catch { online = false; }
       }
       if (cancelled) return;
       setHsmOnline(online);
+      fails = online ? 0 : fails + 1;
+      // Only while we hold an unlocked session: a reboot drops it immediately; the device going
+      // unreachable drops it after two consecutive misses (tolerate a single network blip).
+      if (unlockedRef.current && (rebooted || fails >= 2)) {
+        dlog('hsm lost (', rebooted ? 'reboot: uptime dropped' : 'unreachable', ') — locking + clearing token cache');
+        lastUptime = null;
+        fails = 0;
+        disconnectRef.current();
+      }
       timer = setTimeout(() => void ping(), online ? 10000 : 5000);
     };
     void ping();
