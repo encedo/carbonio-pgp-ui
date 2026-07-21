@@ -1187,8 +1187,11 @@ export default function App() {
   addRoute({
     id: APP_ID,
     app: APP_ID,
+    // Primary-bar order is sorted by `position`; ties are broken by module load order (a
+    // race), so position 200 tied with Calendar (also ~200) and PGP jumped between 2nd and
+    // 3rd. 150 sits strictly between Mails (~100) and Calendar (~200) → PGP is always 2nd.
     route: 'pgp',
-    position: 200,
+    position: 150,
     visible: true,
     label: 'PGP',
     primaryBar: 'LockOutline',
